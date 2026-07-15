@@ -1,0 +1,37 @@
+[
+  {
+    "id": "refund-policy-01",
+    "category": "refunds",
+    "text": "Refund policy: Customers can request a full refund within 7 days of purchase if the product is unused and in original packaging. Refunds are processed within 5-7 business days to the original payment method. Delivery charges are non-refundable unless the item was defective."
+  },
+  {
+    "id": "refund-policy-02",
+    "category": "refunds",
+    "text": "Agar order defective ya damaged aaya hai, customer photo proof ke saath refund ya replacement dono option choose kar sakta hai. Replacement 3-5 din mein deliver hota hai, refund 5-7 business days mein original payment method par."
+  },
+  {
+    "id": "order-tracking-01",
+    "category": "orders",
+    "text": "Order tracking is available via SMS link sent at dispatch, or by logging into the app under 'My Orders'. Tracking updates every 6-12 hours. If tracking hasn't updated in 48 hours, escalate to logistics team."
+  },
+  {
+    "id": "order-tracking-02",
+    "category": "orders",
+    "text": "Order cancel karne ke liye, dispatch se pehle 'My Orders' mein cancel button available hai. Dispatch ho jaane ke baad order cancel nahi ho sakta, sirf return process follow karna hoga delivery ke baad."
+  },
+  {
+    "id": "payment-issues-01",
+    "category": "payments",
+    "text": "If payment was deducted but order shows as failed, the amount is auto-refunded by the bank within 5-7 business days. Customer should not retry payment immediately; instead check order status after 30 minutes before attempting again."
+  },
+  {
+    "id": "account-01",
+    "category": "account",
+    "text": "Password reset available via 'Forgot Password' on login screen, OTP sent to registered mobile number. Account locked after 5 failed attempts for 30 minutes as a security measure."
+  },
+  {
+    "id": "escalation-01",
+    "category": "escalation",
+    "text": "Complaints involving safety issues, legal threats, fraud allegations, or requests to speak to a manager must be escalated to a human agent immediately. AI should not attempt to resolve these categories, only acknowledge and transfer."
+  }
+]

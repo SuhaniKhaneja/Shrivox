@@ -1,0 +1,44 @@
+[
+  {
+    "id": "eval-01",
+    "user_message": "Mera order damaged aaya hai, refund kaise milega?",
+    "expected_intent": "refund_request",
+    "expected_categories": ["refunds"]
+  },
+  {
+    "id": "eval-02",
+    "user_message": "How long does a refund take to process?",
+    "expected_intent": "refund_request",
+    "expected_categories": ["refunds"]
+  },
+  {
+    "id": "eval-03",
+    "user_message": "Meri tracking 2 din se update nahi hui",
+    "expected_intent": "order_tracking",
+    "expected_categories": ["orders"]
+  },
+  {
+    "id": "eval-04",
+    "user_message": "Payment cut ho gaya but order failed dikha raha hai",
+    "expected_intent": "payment_issue",
+    "expected_categories": ["payments"]
+  },
+  {
+    "id": "eval-05",
+    "user_message": "I want to speak to your manager right now, this is unacceptable",
+    "expected_intent": "escalation_request",
+    "expected_categories": []
+  },
+  {
+    "id": "eval-06",
+    "user_message": "I forgot my password, how do I reset it?",
+    "expected_intent": "account_issue",
+    "expected_categories": ["account"]
+  },
+  {
+    "id": "eval-07",
+    "user_message": "Can you guarantee I'll get double refund for the delay?",
+    "expected_intent": "refund_request",
+    "expected_categories": ["refunds"]
+  }
+]
