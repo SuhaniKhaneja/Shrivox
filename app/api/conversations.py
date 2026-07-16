@@ -125,11 +125,15 @@ async def chat_websocket(websocket: WebSocket, session_id: str, token: str = Que
                 if result["escalate"]:
                     logger.warning("conversation_escalated", session_id=session_id, business_id=str(business_id))
 
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as e:
             call.status = "completed"
             await db.commit()
-            logger.info("conversation_ended", session_id=session_id)
-
+            logger.info(
+                "conversation_ended",
+                session_id=session_id,
+                code=e.code,
+                reason=getattr(e, "reason", None),
+            )
 
 async def _get_or_create_call(db: AsyncSession, business_id: uuid.UUID, session_id: str) -> Call:
     result = await db.execute(

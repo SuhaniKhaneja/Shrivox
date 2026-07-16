@@ -54,6 +54,7 @@ async def chat_completion(messages: list[dict], temperature: float = 0.3, max_to
     system_instruction, contents = _to_gemini_contents(messages)
 
     start = time.perf_counter()
+
     resp = await _client.aio.models.generate_content(
         model=settings.reasoning_model,
         contents=contents,
@@ -63,6 +64,7 @@ async def chat_completion(messages: list[dict], temperature: float = 0.3, max_to
             max_output_tokens=max_tokens,
         ),
     )
+
     latency_ms = int((time.perf_counter() - start) * 1000)
 
     usage = resp.usage_metadata
@@ -72,4 +74,3 @@ async def chat_completion(messages: list[dict], temperature: float = 0.3, max_to
         "prompt_tokens": usage.prompt_token_count,
         "completion_tokens": usage.candidates_token_count,
     }
-

@@ -1,12 +1,12 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 websockets==13.1
-pydantic==2.9.2
+pydantic==2.12.5
 email-validator==2.2.0
-pydantic-settings==2.5.2
+pydantic-settings==2.11.0
 langgraph==0.2.39
 langchain-core==0.3.10
-google-genai==0.3.0
+google-genai==2.11.0
 pgvector==0.3.5
 sqlalchemy==2.0.35
 asyncpg==0.29.0
@@ -16,7 +16,7 @@ python-dotenv==1.0.1
 tenacity==8.5.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
-httpx==0.27.2
+httpx==0.28.1
 structlog==24.4.0
 pyjwt==2.9.0
 bcrypt==4.2.0
