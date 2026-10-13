@@ -1,7 +1,6 @@
 # Shrivox
 
-![CI]
-(https://github.com/SuhaniKhaneja/Shrivox/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/SuhaniKhaneja/Shrivox/actions/workflows/ci.yml/badge.svg)
 
 A multi-tenant Hinglish customer support agent built on a stateful
 LangGraph pipeline with RAG-grounded responses and safety guardrails.
