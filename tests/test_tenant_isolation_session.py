@@ -7,34 +7,18 @@ These tests fail if the business_id ever leaves the key.
 """
 
 import uuid
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from app.core.security import create_access_token
 from app.memory import session_memory
 from app.memory.session_memory import is_valid_session_id
+from auth_helpers import FakeRedis, forge_token, ws_environment
 
 TENANT_A = uuid.uuid4()
 TENANT_B = uuid.uuid4()
-
-
-class FakeRedis:
-    """Minimal in-memory stand-in so isolation is tested against real key logic."""
-
-    def __init__(self):
-        self.store: dict[str, str] = {}
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ex=None):
-        self.store[key] = value
-
-    async def delete(self, key):
-        self.store.pop(key, None)
 
 
 @pytest.fixture
@@ -90,50 +74,25 @@ def test_invalid_session_ids(sid):
     assert not is_valid_session_id(sid)
 
 
-# ---------- WebSocket level: tenant comes from the verified token only ----------
+# ---------- WebSocket level: tenant comes from the verified ticket only ----------
+# Tickets are forged with a CHOSEN sid so two tenants can be made to collide on
+# the same session id -- something the server never does, but which the Redis
+# key scoping must survive.
 
-def _ws_patches(fake_redis, captured):
-    async def fake_invoke(state):
-        captured.append(state)
-        return {
-            "response_text": "ok", "intent": "general_query", "escalate": False,
-            "safety_flag": None, "retrieved_doc_ids": [], "token_count": 0,
-        }
-
-    db_ctx = MagicMock()
-    db_ctx.__aenter__ = AsyncMock(return_value=MagicMock(commit=AsyncMock()))
-    db_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    return [
-        patch("app.api.conversations.AsyncSessionLocal", return_value=db_ctx),
-        patch("app.api.conversations._get_or_create_call", new=AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4(), status="active"))),
-        patch("app.api.conversations._persist_turn", new=AsyncMock()),
-        patch("app.api.conversations.shrivox_agent.ainvoke", new=fake_invoke),
-        patch("app.memory.session_memory.get_redis", return_value=fake_redis),
-    ]
+def _ticket(business_id, sid):
+    return forge_token("chat", business_id=business_id, sid=sid)
 
 
-def _token(business_id):
-    return create_access_token(uuid.uuid4(), business_id, "admin")
-
-
-def test_websocket_uses_token_tenant_for_agent_and_memory(fake_redis):
+def test_websocket_uses_ticket_tenant_for_agent_and_memory(fake_redis):
     from app.main import app
 
-    captured: list[dict] = []
-    patches = _ws_patches(fake_redis, captured)
-    for p in patches:
-        p.start()
-    try:
+    with ws_environment(fake_redis) as env:
         client = TestClient(app)
-        with client.websocket_connect(f"/api/v1/voice/stream/shared-id?token={_token(TENANT_A)}") as ws:
+        with client.websocket_connect(f"/api/v1/voice/stream/shared-id?token={_ticket(TENANT_A, 'shared-id')}") as ws:
             ws.send_json({"text": "hello from A", "business_id": str(TENANT_B)})  # client-supplied id must be ignored
             ws.receive_json()
-    finally:
-        for p in patches:
-            p.stop()
 
-    assert captured[0]["business_id"] == TENANT_A
+    assert env.captured[0]["business_id"] == TENANT_A
     assert any(str(TENANT_A) in k for k in fake_redis.store)
     assert not any(str(TENANT_B) in k for k in fake_redis.store)
 
@@ -141,42 +100,40 @@ def test_websocket_uses_token_tenant_for_agent_and_memory(fake_redis):
 def test_websocket_tenant_b_does_not_see_tenant_a_history(fake_redis):
     from app.main import app
 
-    captured: list[dict] = []
-    patches = _ws_patches(fake_redis, captured)
-    for p in patches:
-        p.start()
-    try:
+    with ws_environment(fake_redis) as env:
         client = TestClient(app)
-        with client.websocket_connect(f"/api/v1/voice/stream/shared-id?token={_token(TENANT_A)}") as ws:
+        with client.websocket_connect(f"/api/v1/voice/stream/shared-id?token={_ticket(TENANT_A, 'shared-id')}") as ws:
             ws.send_json({"text": "A's private card issue"})
             ws.receive_json()
-        with client.websocket_connect(f"/api/v1/voice/stream/shared-id?token={_token(TENANT_B)}") as ws:
+        with client.websocket_connect(f"/api/v1/voice/stream/shared-id?token={_ticket(TENANT_B, 'shared-id')}") as ws:
             ws.send_json({"text": "B asks something"})
             ws.receive_json()
-    finally:
-        for p in patches:
-            p.stop()
 
-    a_state, b_state = captured
+    a_state, b_state = env.captured
     assert a_state["conversation_history"] == []
     assert b_state["business_id"] == TENANT_B
     assert b_state["conversation_history"] == []  # nothing from tenant A
 
 
-def test_websocket_rejects_malformed_session_id(fake_redis):
+def test_websocket_rejects_malformed_session_id_even_with_matching_ticket(fake_redis):
+    """Reaches the id-format check: the ticket is valid and its sid matches the
+    URL, so only is_valid_session_id can reject this."""
+    from structlog.testing import capture_logs
     from app.main import app
-    from starlette.websockets import WebSocketDisconnect
 
-    client = TestClient(app)
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/api/v1/voice/stream/{'x' * 51}?token={_token(TENANT_A)}"):
-            pass
+    bad_sid = "x" * 51
+    with ws_environment(fake_redis) as env, capture_logs() as logs:
+        client = TestClient(app)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(f"/api/v1/voice/stream/{bad_sid}?token={_ticket(TENANT_A, bad_sid)}"):
+                pass
     assert exc.value.code == 1008
+    assert [l["reason"] for l in logs if l["event"] == "ws_auth_rejected"] == ["invalid_session_id"]
+    env.session_factory.assert_not_called()
 
 
 def test_websocket_rejects_invalid_token(fake_redis):
     from app.main import app
-    from starlette.websockets import WebSocketDisconnect
 
     client = TestClient(app)
     with pytest.raises(WebSocketDisconnect) as exc:

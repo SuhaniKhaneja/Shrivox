@@ -11,10 +11,12 @@ import structlog
 from fastapi import FastAPI
 from sqlalchemy import text
 
+from app.core.log_redaction import install_token_redaction
 from app.db.session import engine
 from app.api import auth, documents, conversations
 
 logger = structlog.get_logger()
+install_token_redaction()  # chat tickets travel in the WebSocket URL; keep them out of uvicorn logs
 app = FastAPI(title="Shrivox AI", version="0.2.0")
 
 app.include_router(auth.router)

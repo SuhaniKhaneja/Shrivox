@@ -3,27 +3,33 @@ Conversation endpoints: REST for listing/inspecting calls, WebSocket
 for the live turn-by-turn chat (text now, audio frames in Phase 2 over
 the same connection contract).
 
-Why the WebSocket takes the JWT as a query param instead of a header:
+Why the WebSocket takes its credential as a query param instead of a header:
 Browser WebSocket clients cannot set custom Authorization headers on
 the handshake request -- this is a real constraint of the WebSocket
-spec, not a shortcut. Passing the token as `?token=...` and verifying
-it right after `accept()` is the standard workaround. The token is
-still verified before any tenant data is touched.
+spec, not a shortcut. The credential is therefore a short-lived *chat
+ticket* (scope=chat, bound to one server-issued session id and one
+tenant), never a dashboard JWT. It is verified before accept(), so no
+tenant data is touched and no connection is opened for an invalid one.
+
+Query strings end up in proxy and server access logs. Mitigations: the
+ticket expires within CHAT_TICKET_TTL_SECONDS and authorizes one session
+only, and app/core/log_redaction.py scrubs `token=` from uvicorn's logs.
+A ticket is NOT single-use: it can be replayed until it expires.
 """
 
+import hmac
 import time
 import uuid
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import jwt
 
 from app.agents.graph import shrivox_agent
 from app.memory.session_memory import get_history, append_turn, is_valid_session_id
 from app.db.session import AsyncSessionLocal, get_db
 from app.db.models import Call, Message
-from app.core.security import decode_access_token
+from app.core.security import SCOPE_CHAT, TokenError, decode_token
 from app.api.deps import get_current_user, CurrentUser
 
 logger = structlog.get_logger()
@@ -68,18 +74,31 @@ async def get_conversation(call_id: uuid.UUID, current_user: CurrentUser = Depen
 
 @router.websocket("/voice/stream/{session_id}")
 async def chat_websocket(websocket: WebSocket, session_id: str, token: str = Query(...)):
-    # Verify before accept()-ing so an unauthenticated caller never gets
-    # a live connection to a tenant's agent, even briefly.
+    # Authenticate before accept()-ing so an unauthenticated caller never gets
+    # a live connection to a tenant's agent, even briefly. Only a chat ticket
+    # is accepted: a dashboard JWT fails the scope check. Reasons are logged by
+    # category only -- never the token, and never the client-supplied session id.
     try:
-        payload = decode_access_token(token)
-    except jwt.PyJWTError:
+        claims = decode_token(token, expected_scope=SCOPE_CHAT)
+    except TokenError as exc:
+        logger.warning("ws_auth_rejected", reason=type(exc).__name__)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    business_id = uuid.UUID(payload["business_id"])
+    # The ticket is bound to one session: the URL's session id must equal the
+    # ticket's `sid`. Constant-time compare, since sid is a capability.
+    if not hmac.compare_digest(session_id.encode(), (claims.sid or "").encode()):
+        logger.warning("ws_auth_rejected", reason="sid_mismatch")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
-    # Reject malformed ids before any tenant data or Redis key is touched.
+    # Tenant identity comes ONLY from the verified claims.
+    business_id = claims.business_id
+
+    # Defense in depth: also enforce the id format (sid is server-generated,
+    # but this keeps malformed ids out of Redis keys and Call.caller_ref).
     if not is_valid_session_id(session_id):
+        logger.warning("ws_auth_rejected", reason="invalid_session_id")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
