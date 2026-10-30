@@ -1,8 +1,12 @@
 import json
+import uuid
 import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.memory import session_memory
+
+
+TENANT_A = uuid.uuid4()
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +22,7 @@ async def test_append_turn_grows_history():
     mock_redis.get.return_value = json.dumps([{"role": "user", "content": "hi"}])
 
     with patch("app.memory.session_memory.get_redis", return_value=mock_redis):
-        history = await session_memory.append_turn("session-1", "assistant", "hello there")
+        history = await session_memory.append_turn(TENANT_A, "session-1", "assistant", "hello there")
 
     assert len(history) == 2
     assert history[-1] == {"role": "assistant", "content": "hello there"}
@@ -34,7 +38,7 @@ async def test_history_capped_at_max_turns():
     mock_redis.get.return_value = json.dumps(long_history)
 
     with patch("app.memory.session_memory.get_redis", return_value=mock_redis):
-        history = await session_memory.append_turn("session-1", "user", "one more message")
+        history = await session_memory.append_turn(TENANT_A, "session-1", "user", "one more message")
 
     assert len(history) == settings.max_conversation_turns
     assert history[-1]["content"] == "one more message"
@@ -48,6 +52,6 @@ async def test_empty_history_returns_empty_list():
     mock_redis.get.return_value = None
 
     with patch("app.memory.session_memory.get_redis", return_value=mock_redis):
-        history = await session_memory.get_history("new-session")
+        history = await session_memory.get_history(TENANT_A, "new-session")
 
     assert history == []

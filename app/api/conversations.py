@@ -20,7 +20,7 @@ from sqlalchemy import select
 import jwt
 
 from app.agents.graph import shrivox_agent
-from app.memory.session_memory import get_history, append_turn
+from app.memory.session_memory import get_history, append_turn, is_valid_session_id
 from app.db.session import AsyncSessionLocal, get_db
 from app.db.models import Call, Message
 from app.core.security import decode_access_token
@@ -77,6 +77,12 @@ async def chat_websocket(websocket: WebSocket, session_id: str, token: str = Que
         return
 
     business_id = uuid.UUID(payload["business_id"])
+
+    # Reject malformed ids before any tenant data or Redis key is touched.
+    if not is_valid_session_id(session_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await websocket.accept()
 
     async with AsyncSessionLocal() as db:
@@ -90,7 +96,7 @@ async def chat_websocket(websocket: WebSocket, session_id: str, token: str = Que
                     continue
 
                 turn_start = time.perf_counter()
-                history = await get_history(session_id)
+                history = await get_history(business_id, session_id)
 
                 result = await shrivox_agent.ainvoke({
                     "session_id": session_id,
@@ -109,8 +115,8 @@ async def chat_websocket(websocket: WebSocket, session_id: str, token: str = Que
 
                 total_latency_ms = int((time.perf_counter() - turn_start) * 1000)
 
-                await append_turn(session_id, "customer", user_message)
-                await append_turn(session_id, "agent", result["response_text"])
+                await append_turn(business_id, session_id, "customer", user_message)
+                await append_turn(business_id, session_id, "agent", result["response_text"])
 
                 await _persist_turn(db, call.id, len(history) // 2, user_message, result, total_latency_ms)
 
