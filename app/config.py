@@ -12,6 +12,7 @@ not mid-request, (2) every module imports the same validated object,
 (3) tests can override settings cleanly via env vars or fixtures.
 """
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,10 @@ class Settings(BaseSettings):
 
     # --- Auth ---
     jwt_secret: str
+    # Lifetime of a customer chat ticket. The ticket is only needed to open the
+    # WebSocket, and it travels in the URL, so keep it short. Bounded so a
+    # misconfiguration cannot turn it back into a long-lived credential.
+    chat_ticket_ttl_seconds: int = Field(default=60, ge=5, le=900)
 
     # --- App behavior ---
     max_conversation_turns: int = 30

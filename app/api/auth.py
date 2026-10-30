@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.models import Business, User
-from app.core.security import hash_password, verify_password, create_access_token
+from app.api.deps import CurrentUser, get_current_user
+from app.core.security import hash_password, verify_password, create_access_token, create_chat_ticket
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -39,6 +40,13 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ChatTicketResponse(BaseModel):
+    ticket: str
+    session_id: str
+    expires_in: int  # seconds
+    ws_path: str
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -77,3 +85,21 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     token = create_access_token(user.id, user.business_id, user.role)
     return TokenResponse(access_token=token)
+
+
+@router.post("/chat-ticket", response_model=ChatTicketResponse, status_code=status.HTTP_201_CREATED)
+async def issue_chat_ticket(current_user: CurrentUser = Depends(get_current_user)):
+    """Mint a short-lived, single-session credential for the customer-facing chat.
+
+    Requires a dashboard token. The request has no body on purpose: the tenant
+    comes from the verified token and the session id is generated here, so
+    nothing the client sends can choose either. Hand `ticket` to the customer
+    client and have it open `ws_path` with `?token=<ticket>`.
+    """
+    issued = create_chat_ticket(current_user.user_id, current_user.business_id)
+    return ChatTicketResponse(
+        ticket=issued.ticket,
+        session_id=issued.session_id,
+        expires_in=issued.expires_in,
+        ws_path=f"/api/v1/voice/stream/{issued.session_id}",
+    )

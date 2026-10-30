@@ -123,10 +123,50 @@ Run the server:
 uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:8000/docs` for interactive API docs. Log in
-via `POST /api/v1/auth/login` with the credentials the seed script
-printed, then connect to `ws://localhost:8000/api/v1/chat/stream/{session_id}?token=<access_token>`
-and send `{"text": "mera order kaha hai?"}`.
+Open `http://localhost:8000/docs` for interactive API docs. For a quick
+end-to-end check from the command line, run `python scripts/test_chat.py`
+(see "Authentication model" below for what it does).
+
+## Authentication model
+
+Two credentials, deliberately not interchangeable (`app/core/security.py`):
+
+| Credential | Issued by | Lifetime | Authorizes | Rejected by |
+| --- | --- | --- | --- | --- |
+| Dashboard token (`scope=dashboard`) | `POST /api/v1/auth/login`, `/register` | 24 h | All REST endpoints (documents, conversations, ticket minting) | The WebSocket |
+| Chat ticket (`scope=chat`) | `POST /api/v1/auth/chat-ticket` (needs a dashboard token) | `CHAT_TICKET_TTL_SECONDS`, default 60 s (allowed range 5-900) | One WebSocket session | All REST endpoints |
+
+A ticket is bound to one tenant (`business_id`) and one server-generated,
+unguessable session id (`sid`). The WebSocket path must be exactly
+`/api/v1/voice/stream/{sid}`; any other session id is rejected. The tenant is
+always taken from the verified token, never from anything the client sends.
+Every token must carry `exp`, `iat`, `sub`, `business_id` and `scope`.
+
+**Chat flow** (the customer-facing client never sees a dashboard token):
+
+1. Your backend logs in and calls `POST /api/v1/auth/chat-ticket` with the
+   dashboard token. The response has `ticket`, `session_id`, `expires_in`, `ws_path`.
+2. It hands the ticket to the customer's client, which connects to
+   `ws://<host>{ws_path}?token=<ticket>` and sends `{"text": "mera order kaha hai?"}`.
+
+`scripts/test_chat.py` performs exactly this (password from `SHRIVOX_PASSWORD`
+or a prompt). Seed-script login: `admin@example.com` / `demo_password_123`.
+
+**Upgrade note:** tokens issued before this change have no `scope` claim and
+are rejected; users simply log in again.
+
+**Known limits of the ticket design**
+
+- Browsers cannot set headers on a WebSocket handshake, so the ticket is sent
+  in the URL query string, which web servers, proxies and load balancers may
+  log. uvicorn's own logs are redacted (`app/core/log_redaction.py`), but
+  infrastructure in front of the app is not covered: redact or disable
+  `token=` in its logs too. The short lifetime and single-session scope are the
+  real mitigation.
+- A ticket is not single-use: it can be replayed on its session until it
+  expires. Expiry is checked when the connection opens; an already-open
+  connection is not cut off when the ticket expires.
+- Ticket minting is not rate limited yet.
 
 ## Evaluation
 

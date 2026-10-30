@@ -23,7 +23,8 @@ from app.retrieval.retriever import upsert_chunk
 from app.retrieval.chunking import chunk_text
 
 KB_PATH = Path(__file__).parent.parent / "data" / "knowledge_base" / "support_docs.json"
-DEMO_EMAIL = "admin@demoshop.test"
+# Must pass pydantic EmailStr in /auth/login: reserved TLDs such as .test are rejected (422).
+DEMO_EMAIL = "admin@example.com"
 DEMO_PASSWORD = "demo_password_123"
 
 

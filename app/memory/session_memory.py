@@ -23,8 +23,19 @@ summarization is added in the agent layer, not here).
 """
 
 import json
+import re
+import uuid
+
 from redis.asyncio import Redis
 from app.config import settings
+
+# Client-supplied session ids are bounded to what Call.caller_ref (String(50))
+# can store and to a charset that cannot interfere with key structure.
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    return bool(SESSION_ID_PATTERN.fullmatch(session_id))
 
 _redis: Redis | None = None
 
@@ -36,19 +47,22 @@ def get_redis() -> Redis:
     return _redis
 
 
-def _key(session_id: str) -> str:
-    return f"shrivox:session:{session_id}"
+def _key(business_id: uuid.UUID, session_id: str) -> str:
+    """Tenant boundary for hot memory: the business_id comes from the verified
+    JWT, never from the client, and is part of the key. Two tenants using the
+    same session_id therefore address different Redis keys."""
+    return f"shrivox:session:{business_id}:{session_id}"
 
 
-async def get_history(session_id: str) -> list[dict]:
+async def get_history(business_id: uuid.UUID, session_id: str) -> list[dict]:
     r = get_redis()
-    raw = await r.get(_key(session_id))
+    raw = await r.get(_key(business_id, session_id))
     return json.loads(raw) if raw else []
 
 
-async def append_turn(session_id: str, role: str, content: str) -> list[dict]:
+async def append_turn(business_id: uuid.UUID, session_id: str, role: str, content: str) -> list[dict]:
     r = get_redis()
-    history = await get_history(session_id)
+    history = await get_history(business_id, session_id)
     history.append({"role": role, "content": content})
 
     # Bound the window; agent layer decides whether to summarize the tail
@@ -57,10 +71,10 @@ async def append_turn(session_id: str, role: str, content: str) -> list[dict]:
     if len(history) > settings.max_conversation_turns:
         history = history[-settings.max_conversation_turns:]
 
-    await r.set(_key(session_id), json.dumps(history), ex=settings.session_ttl_seconds)
+    await r.set(_key(business_id, session_id), json.dumps(history), ex=settings.session_ttl_seconds)
     return history
 
 
-async def clear_session(session_id: str) -> None:
+async def clear_session(business_id: uuid.UUID, session_id: str) -> None:
     r = get_redis()
-    await r.delete(_key(session_id))
+    await r.delete(_key(business_id, session_id))
