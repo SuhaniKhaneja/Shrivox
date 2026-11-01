@@ -127,6 +127,38 @@ Open `http://localhost:8000/docs` for interactive API docs. For a quick
 end-to-end check from the command line, run `python scripts/test_chat.py`
 (see "Authentication model" below for what it does).
 
+## Tests
+
+```
+python -m pytest tests                                   # unit suite (mocked services); integration tests are skipped
+python -m pytest tests/integration --run-integration     # integration suite, needs real PostgreSQL+pgvector and Redis
+```
+
+The integration suite (`tests/integration`) runs the real app against real
+PostgreSQL (pgvector) and Redis. Only Gemini is faked (deterministic
+bag-of-words embeddings, recorded chat prompts). It proves tenant isolation at
+every SQL query site that touches tenant data, in pgvector retrieval, and in
+Redis keys, using two tenants with *identical* knowledge so a missing
+`business_id` filter cannot hide behind a weaker match.
+
+To run it locally:
+
+```powershell
+docker compose up -d postgres redis
+$env:GOOGLE_API_KEY = "dummy"; $env:JWT_SECRET = "ci_test_secret"
+$env:POSTGRES_DSN = "postgresql+asyncpg://shrivox:shrivox@localhost:5432/shrivox_test"
+$env:REDIS_URL    = "redis://localhost:6379/15"
+python -m pytest tests/integration --run-integration -q
+```
+
+The suite truncates tables and deletes Redis session keys, so it refuses to
+run unless the database name ends in `_test` and Redis is logical DB 15. A
+missing `shrivox_test` database is created automatically. If you pass
+`--run-integration` and the infrastructure is unreachable, the run fails
+loudly instead of skipping. The schema comes from the SQLAlchemy models
+(`create_all`); it does not exercise migrations because none exist yet. In CI
+this runs as the separate `integration` job with service containers.
+
 ## Authentication model
 
 Two credentials, deliberately not interchangeable (`app/core/security.py`):
