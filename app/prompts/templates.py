@@ -23,8 +23,18 @@ Rules:
 - Never make promises ("guaranteed", "100% refund") beyond what the context supports.
 """
 
+# The intent vocabulary lives here, next to the prompt that teaches it to the
+# model, and the prompt's "Categories:" line is BUILT from it so the two cannot
+# drift apart. graph.normalize_intent() maps whatever the model returns onto
+# this set; anything else becomes DEFAULT_INTENT.
+VALID_INTENTS = (
+    "refund_request", "order_tracking", "payment_issue", "account_issue",
+    "escalation_request", "general_query", "greeting", "goodbye",
+)
+DEFAULT_INTENT = "general_query"
+
 INTENT_DETECTION_PROMPT = """Classify the customer's message into exactly one intent category.
-Categories: refund_request, order_tracking, payment_issue, account_issue, escalation_request, general_query, greeting, goodbye
+Categories: """ + ", ".join(VALID_INTENTS) + """
 
 Message: "{message}"
 
