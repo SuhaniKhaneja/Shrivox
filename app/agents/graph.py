@@ -23,15 +23,19 @@ methods) -- LangGraph passes state as plain dicts between nodes, so
 each node is just "read what it needs off the dict, return the delta."
 """
 
+import re
 import uuid
 from typing import TypedDict, Optional
+import structlog
 from langgraph.graph import StateGraph, END
 
 from app.agents.llm_client import chat_completion
 from app.agents.guardrails import check_input, check_output
 from app.retrieval.retriever import retrieve
-from app.prompts.templates import build_response_prompt, INTENT_DETECTION_PROMPT
+from app.prompts.templates import build_response_prompt, INTENT_DETECTION_PROMPT, VALID_INTENTS, DEFAULT_INTENT
 from app.db.session import AsyncSessionLocal
+
+logger = structlog.get_logger()
 
 
 class ConversationState(TypedDict):
@@ -49,6 +53,29 @@ class ConversationState(TypedDict):
     token_count: int
 
 
+_INTENT_PUNCTUATION = "`'\".,;:!?*()[]{}<>"
+
+
+def normalize_intent(raw) -> str:
+    """Map the classifier model's raw output onto VALID_INTENTS.
+
+    Models decorate answers ("`greeting`", "Refund Request.", "refund_request
+    because..."). The whole reply is tried first, then its first word; anything
+    that still isn't in the vocabulary becomes DEFAULT_INTENT. The result is
+    therefore ALWAYS a short vocabulary member, never raw model text -- which
+    matters because it is persisted (Message.intent is String(50)) and used for
+    analytics."""
+    if not isinstance(raw, str) or not raw.strip():
+        return DEFAULT_INTENT
+    text = raw.strip()
+    for candidate in (text, text.split(None, 1)[0]):
+        cleaned = re.sub(r"[\s\-]+", "_", candidate.strip(_INTENT_PUNCTUATION).lower())
+        if cleaned in VALID_INTENTS:
+            return cleaned
+    logger.warning("intent_out_of_vocabulary", raw_length=len(raw))  # length only, never the text
+    return DEFAULT_INTENT
+
+
 async def detect_intent(state: ConversationState) -> dict:
     input_check = check_input(state["user_message"])
     if not input_check.safe:
@@ -59,7 +86,7 @@ async def detect_intent(state: ConversationState) -> dict:
         temperature=0.0,
         max_tokens=20,
     )
-    return {"intent": result["text"].strip().lower(), "escalate": False}
+    return {"intent": normalize_intent(result["text"]), "escalate": False}
 
 
 async def retrieve_context(state: ConversationState) -> dict:
