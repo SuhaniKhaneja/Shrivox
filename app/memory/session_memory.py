@@ -43,7 +43,13 @@ _redis: Redis | None = None
 def get_redis() -> Redis:
     global _redis
     if _redis is None:
-        _redis = Redis.from_url(settings.redis_url, decode_responses=True)
+        # Short timeouts: a hung Redis must fail fast (the caller degrades) rather
+        # than hang every chat turn behind it.
+        _redis = Redis.from_url(
+            settings.redis_url, decode_responses=True,
+            socket_timeout=settings.redis_timeout_seconds,
+            socket_connect_timeout=settings.redis_timeout_seconds,
+        )
     return _redis
 
 
@@ -60,10 +66,13 @@ async def get_history(business_id: uuid.UUID, session_id: str) -> list[dict]:
     return json.loads(raw) if raw else []
 
 
-async def append_turn(business_id: uuid.UUID, session_id: str, role: str, content: str) -> list[dict]:
+async def append_turns(business_id: uuid.UUID, session_id: str, turns: list[tuple[str, str]]) -> list[dict]:
+    """Append several (role, content) turns with ONE read and ONE write, so a
+    customer message and its reply are stored together or not at all -- never a
+    dangling customer message with no reply."""
     r = get_redis()
     history = await get_history(business_id, session_id)
-    history.append({"role": role, "content": content})
+    history.extend({"role": role, "content": content} for role, content in turns)
 
     # Bound the window; agent layer decides whether to summarize the tail
     # it drops. We just enforce the cap here so Redis payload size and
@@ -73,6 +82,10 @@ async def append_turn(business_id: uuid.UUID, session_id: str, role: str, conten
 
     await r.set(_key(business_id, session_id), json.dumps(history), ex=settings.session_ttl_seconds)
     return history
+
+
+async def append_turn(business_id: uuid.UUID, session_id: str, role: str, content: str) -> list[dict]:
+    return await append_turns(business_id, session_id, [(role, content)])
 
 
 async def clear_session(business_id: uuid.UUID, session_id: str) -> None:

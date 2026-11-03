@@ -45,6 +45,17 @@ async def fetch_chat_ticket(client: httpx.AsyncClient, email: str, password: str
     return issued.json()
 
 
+def format_frame(data: dict) -> str:
+    """Render one server frame. Error frames (type="error") carry no intent or
+    latency, so they must not be formatted like replies."""
+    if data.get("type") == "error":
+        hint = "you can retry" if data.get("retryable") else "retrying the same message will not help"
+        return f"[error {data['code']}] {data['message']} ({hint})\n"
+    note = f", degraded={data['degraded']}" if data.get("degraded") else ""
+    return (f"Shrivox: {data['response']}\n"
+            f"   (intent={data['intent']}, latency={data['latency_ms']}ms, flag={data['safety_flag']}{note})\n")
+
+
 def websocket_url(base_url: str, issued: dict) -> str:
     ws_base = base_url.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
     return f"{ws_base}{issued['ws_path']}?token={issued['ticket']}"
@@ -70,9 +81,7 @@ async def main():
             if msg.lower() == "quit":
                 break
             await ws.send(json.dumps({"text": msg}))
-            data = json.loads(await ws.recv())
-            print(f"Shrivox: {data['response']}")
-            print(f"   (intent={data['intent']}, latency={data['latency_ms']}ms, flag={data['safety_flag']})\n")
+            print(format_frame(json.loads(await ws.recv())))
 
 
 if __name__ == "__main__":

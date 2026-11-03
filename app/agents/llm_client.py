@@ -25,11 +25,11 @@ provider-specific message format.
 
 import time
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
 from google import genai
 from google.genai import types
 
 from app.config import settings
+from app.core.upstream import UpstreamEmptyResponse, call_with_retry
 
 logger = structlog.get_logger()
 
@@ -73,30 +73,41 @@ def _to_gemini_contents(messages: list[dict]) -> tuple[str | None, list[types.Co
     return system_instruction, contents
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=4))
 async def chat_completion(messages: list[dict], temperature: float = 0.3, max_tokens: int = 300) -> dict:
-    system_instruction, contents = _to_gemini_contents(messages)
+    """One Gemini chat call under the shared upstream policy (see app/core/upstream.py).
 
+    Raises UpstreamUnavailable (transient, after bounded retries),
+    UpstreamRejected (4xx; never retried) or UpstreamEmptyResponse (the model
+    returned no text -- never passed on as an empty answer)."""
+    system_instruction, contents = _to_gemini_contents(messages)
     start = time.perf_counter()
 
-    resp = await _client.aio.models.generate_content(
-        model=settings.reasoning_model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-        ),
-    )
+    async def generate():
+        return await _client.aio.models.generate_content(
+            model=settings.reasoning_model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            ),
+        )
 
-    latency_ms = int((time.perf_counter() - start) * 1000)
+    resp = await call_with_retry("llm", generate)
+    latency_ms = int((time.perf_counter() - start) * 1000)  # includes any retries: what the customer waited
+
+    text = resp.text
+    if not text or not text.strip():
+        candidates = getattr(resp, "candidates", None) or [None]
+        logger.warning("llm_empty_response", finish_reason=str(getattr(candidates[0], "finish_reason", None)))
+        raise UpstreamEmptyResponse("llm", "empty_response")
 
     # The SDK reports usage fields as Optional; a missing value must not crash
     # the turn after the answer has already been generated. 0 means "not
     # reported", and thinking tokens are not included in completion_tokens.
     usage = resp.usage_metadata
     return {
-        "text": resp.text,
+        "text": text,
         "latency_ms": latency_ms,
         "prompt_tokens": getattr(usage, "prompt_token_count", None) or 0,
         "completion_tokens": getattr(usage, "candidates_token_count", None) or 0,

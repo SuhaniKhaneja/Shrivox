@@ -65,6 +65,7 @@ class _FakeSession:
     def __init__(self):
         self.execute = AsyncMock(return_value=_FakeResult())
         self.add = MagicMock()
+        self.add_all = MagicMock()
         self.commit = AsyncMock()
         self.refresh = AsyncMock()
         self.delete = AsyncMock()
@@ -76,7 +77,8 @@ def client():
         yield _FakeSession()
 
     app.dependency_overrides[get_db] = fake_get_db
-    with patch("app.api.documents.upsert_chunk", new=AsyncMock()):  # never call the embedding API
+    fake_embed = AsyncMock(side_effect=lambda texts, task_type=None: [[0.0] * 3 for _ in texts])
+    with patch("app.api.documents.embed_texts", new=fake_embed):  # never call the embedding API
         yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 

@@ -38,15 +38,21 @@ model which side of the search each text represents.
 from dataclasses import dataclass
 import uuid
 
+import structlog
 from google import genai
 from google.genai import types
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.upstream import UpstreamEmptyResponse, call_with_retry
 from app.db.models import KnowledgeChunk
 
+logger = structlog.get_logger()
 _genai_client = genai.Client(api_key=settings.google_api_key)
+
+# Texts per embedding request when ingesting a document.
+EMBED_BATCH_SIZE = 32
 
 
 @dataclass
@@ -57,16 +63,44 @@ class RetrievedDoc:
     metadata: dict
 
 
+async def _embed(contents: str | list[str], task_type: str) -> list:
+    """One embedding request under the shared upstream policy (timeout, bounded
+    retry of transient errors only). Raises Upstream* errors with service="embedding"."""
+    async def call():
+        return await _genai_client.aio.models.embed_content(
+            model=settings.embedding_model,
+            contents=contents,
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=settings.embedding_dim,
+            ),
+        )
+
+    result = await call_with_retry("embedding", call)
+    if not result.embeddings:
+        raise UpstreamEmptyResponse("embedding", "empty_response")
+    return result.embeddings
+
+
 async def embed_text(text: str, task_type: str = "RETRIEVAL_DOCUMENT") -> list[float]:
-    result = await _genai_client.aio.models.embed_content(
-        model=settings.embedding_model,
-        contents=text,
-        config=types.EmbedContentConfig(
-            task_type=task_type,
-            output_dimensionality=settings.embedding_dim,
-        ),
-    )
-    return result.embeddings[0].values
+    return (await _embed(text, task_type))[0].values
+
+
+async def embed_texts(texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
+    """Embed many texts, EMBED_BATCH_SIZE per request, preserving order.
+
+    If the API ever returns a different number of embeddings than inputs, the
+    batch is redone one text at a time rather than risking misaligned vectors
+    (a chunk silently stored with another chunk's embedding)."""
+    vectors: list[list[float]] = []
+    for i in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = texts[i:i + EMBED_BATCH_SIZE]
+        embeddings = await _embed(batch, task_type)
+        if len(embeddings) != len(batch):
+            logger.warning("embed_batch_count_mismatch", expected=len(batch), received=len(embeddings))
+            embeddings = [(await _embed(text, task_type))[0] for text in batch]
+        vectors.extend(e.values for e in embeddings)
+    return vectors
 
 
 async def upsert_chunk(db: AsyncSession, document_id: uuid.UUID, business_id: uuid.UUID,

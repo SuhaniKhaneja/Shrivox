@@ -39,10 +39,6 @@ def fake_embedding(text_: str, dim: int | None = None) -> list[float]:
     return [x / norm for x in vec]
 
 
-async def fake_embed_text(text_: str, task_type: str = "RETRIEVAL_DOCUMENT") -> list[float]:
-    return fake_embedding(text_)
-
-
 # ---------------------------------------------------------------- fake LLM
 
 class FakeLLM:

@@ -200,6 +200,80 @@ are rejected; users simply log in again.
   connection is not cut off when the ticket expires.
 - Ticket minting is not rate limited yet.
 
+## Failure handling
+
+Every external dependency can fail; each failure has a defined, tested outcome
+(`tests/integration/test_failure_matrix.py`). Errors never expose exception
+text, SQL or customer content: clients get fixed messages from one catalogue
+(`app/core/failures.py`) and logs record only the error *type*.
+
+**Chat WebSocket.** The server answers each client message with exactly one frame:
+a reply, `{"type": "response", "response", "intent", "escalate", "safety_flag", "latency_ms"}`,
+or an error, `{"type": "error", "code", "message", "retryable"}`. An error frame does **not**
+close the connection. `retryable` means "the same message may succeed if sent again".
+
+| What fails | Client sees | Postgres | Redis |
+| --- | --- | --- | --- |
+| Gemini timeout / 429 / 5xx / network (after bounded retries) | `llm_unavailable`, retryable | nothing written | nothing written |
+| Gemini 4xx (bad request, bad key; never retried) | `llm_rejected` | nothing written | nothing written |
+| Gemini returns no text | `llm_empty_response`, retryable | nothing written | nothing written |
+| Gemini returns no intent text | normal reply; intent falls back to `general_query` | turn saved | turn saved |
+| Query embedding fails | `embedding_unavailable` (no answer is invented without knowledge-base search) | nothing written | nothing written |
+| Postgres fails while retrieving or saving | `database_unavailable`, retryable; the reply is withheld | rolled back; session stays usable | **not** written |
+| Postgres unreachable when the session opens | `database_unavailable`, then close code 1011 | none | none |
+| Redis unreachable (or timing out after `REDIS_TIMEOUT_SECONDS`) | normal reply with `"degraded": ["session_memory"]` | turn saved | skipped; the next turns lack earlier context |
+| Turn exceeds `TURN_TIMEOUT_SECONDS` | `turn_timeout`, retryable | nothing written | nothing written |
+| Unexpected server error | `internal_error` | nothing written | nothing written |
+| Bad frame (not JSON, not an object, binary) | `invalid_frame` | nothing written | nothing written |
+| Missing / empty / non-string `text` | `invalid_message` | nothing written | nothing written |
+| `text` longer than `MAX_MESSAGE_CHARS` | `message_too_long` | nothing written | nothing written |
+
+*Ordering:* Postgres is written first and a reply is delivered only after it is
+saved, so a delivered reply is always persisted. Redis is working memory, written
+second; a customer message and its reply are stored in one write.
+
+*Call lifecycle:* a call is `active` while connected, `escalated` as soon as an
+escalating turn is saved, and on disconnect becomes `completed` (or stays
+`escalated`) with `ended_at` set. Reconnecting to a finished call makes it `active` again.
+
+**Gemini calls** (chat and embeddings) share one policy (`app/core/upstream.py`):
+a per-attempt timeout, and at most `UPSTREAM_MAX_ATTEMPTS` attempts with
+exponential backoff for *transient* errors only (timeout, network, HTTP 408/429/5xx).
+Other 4xx errors are never retried.
+
+**Document upload** embeds everything *first*, then writes the document and all its
+chunks in one transaction, so a failure leaves nothing behind (no half-ingested
+document). Embedding outage: `503 embedding_unavailable` (with `Retry-After`);
+embedding rejected: `502`; database outage: `503 database_unavailable`; unexpected
+database rejection: `500 internal_error`. Invalid uploads (empty or whitespace-only
+text, `text` over `MAX_DOCUMENT_CHARS`, filename empty or over 255 characters) get
+`422` before any Gemini call. The same JSON shape, `{"detail", "code"}`, is used by
+every REST endpoint when the database or Gemini fails.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `UPSTREAM_TIMEOUT_SECONDS` | 15 | Timeout per Gemini attempt |
+| `UPSTREAM_MAX_ATTEMPTS` | 3 | Attempts for transient errors (1-5) |
+| `UPSTREAM_RETRY_BACKOFF_SECONDS` | 0.5 | Exponential backoff multiplier |
+| `TURN_TIMEOUT_SECONDS` | 45 | Ceiling for one whole chat turn |
+| `MAX_MESSAGE_CHARS` | 2000 | Longest accepted chat message |
+| `MAX_DOCUMENT_CHARS` | 200000 | Longest accepted document |
+| `REDIS_TIMEOUT_SECONDS` | 2.0 | Redis connect/read timeout |
+
+**Known limits**
+
+- Request-body and WebSocket frame sizes are only checked *after* the server has
+  read them. Enforce hard limits at the reverse proxy / `uvicorn --ws-max-size`.
+- If the server is shut down abruptly (the handler task is cancelled), a call row
+  can remain `active`; nothing reaps stale calls yet.
+- There are no idempotency keys: a client retry after a lost response creates a
+  second turn (chat) or a second document (upload).
+- Embedding batches use the SDK's list input; a wrong-sized response falls back to
+  one call per text (logged as `embed_batch_count_mismatch`). Batch behaviour has
+  not been verified against the live API.
+- The Redis timeout setting is applied, but only the connection-refused path is covered by a test, not an actual slow Redis.
+- There is no rate limiting yet.
+
 ## Evaluation
 
 ```

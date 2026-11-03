@@ -34,6 +34,7 @@ from app.agents.guardrails import check_input, check_output
 from app.retrieval.retriever import retrieve
 from app.prompts.templates import build_response_prompt, INTENT_DETECTION_PROMPT, VALID_INTENTS, DEFAULT_INTENT
 from app.db.session import AsyncSessionLocal
+from app.core.upstream import UpstreamEmptyResponse
 
 logger = structlog.get_logger()
 
@@ -81,12 +82,18 @@ async def detect_intent(state: ConversationState) -> dict:
     if not input_check.safe:
         return {"escalate": True, "safety_flag": input_check.flag, "intent": "escalation_request"}
 
-    result = await chat_completion(
-        [{"role": "user", "content": INTENT_DETECTION_PROMPT.format(message=state["user_message"])}],
-        temperature=0.0,
-        max_tokens=20,
-    )
-    return {"intent": normalize_intent(result["text"]), "escalate": False}
+    try:
+        result = await chat_completion(
+            [{"role": "user", "content": INTENT_DETECTION_PROMPT.format(message=state["user_message"])}],
+            temperature=0.0,
+            max_tokens=20,
+        )
+        return {"intent": normalize_intent(result["text"]), "escalate": False}
+    except UpstreamEmptyResponse:
+        # The classifier is best-effort: an empty reply must not fail the whole
+        # turn. Other upstream failures (unavailable/rejected) still do.
+        logger.warning("intent_empty_response")
+        return {"intent": DEFAULT_INTENT, "escalate": False}
 
 
 async def retrieve_context(state: ConversationState) -> dict:

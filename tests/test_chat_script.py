@@ -62,3 +62,14 @@ async def test_script_surfaces_login_failure_without_ticket(user_db):
         with pytest.raises(httpx.HTTPStatusError) as exc:
             await script.fetch_chat_ticket(client, "owner@example.com", "wrong-password")
     assert exc.value.response.status_code == 401
+
+
+def test_script_formats_error_frames_instead_of_crashing_on_missing_reply_fields():
+    script = load_script()
+    retryable = script.format_frame({"type": "error", "code": "llm_unavailable", "message": "Try again.", "retryable": True})
+    permanent = script.format_frame({"type": "error", "code": "invalid_message", "message": "Bad.", "retryable": False})
+    assert "llm_unavailable" in retryable and "you can retry" in retryable
+    assert "will not help" in permanent
+    reply = script.format_frame({"type": "response", "response": "Hello", "intent": "greeting", "latency_ms": 12,
+                                 "safety_flag": None, "degraded": ["session_memory"]})
+    assert "Hello" in reply and "session_memory" in reply
