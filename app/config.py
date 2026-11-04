@@ -38,6 +38,22 @@ class Settings(BaseSettings):
     # misconfiguration cannot turn it back into a long-lived credential.
     chat_ticket_ttl_seconds: int = Field(default=60, ge=5, le=900)
 
+    # --- Failure policy (see README "Failure handling") ---
+    # Every call to Gemini (chat and embeddings) shares one policy: a per-attempt
+    # timeout, and a bounded number of attempts for TRANSIENT errors only
+    # (timeouts, 429, 5xx, network). Client errors (4xx) are never retried.
+    upstream_timeout_seconds: float = Field(default=15.0, ge=1, le=120)
+    upstream_max_attempts: int = Field(default=3, ge=1, le=5)
+    upstream_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
+    # Hard ceiling for one chat turn (intent + retrieval + generation + any
+    # safety retry), so stacked retries can never leave a customer waiting minutes.
+    turn_timeout_seconds: float = Field(default=45.0, ge=5, le=300)
+    # Input limits. Oversized input is rejected before it costs an LLM call.
+    max_message_chars: int = Field(default=2000, ge=1, le=20000)
+    max_document_chars: int = Field(default=200_000, ge=1000, le=5_000_000)
+    # Redis must fail fast: a hung Redis would otherwise hang every chat turn.
+    redis_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+
     # --- App behavior ---
     max_conversation_turns: int = 30
     session_ttl_seconds: int = 3600  # Redis session expiry (1 hr of inactivity)

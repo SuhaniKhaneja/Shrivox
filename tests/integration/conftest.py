@@ -28,7 +28,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import settings
-from integration_helpers import FakeLLM, PerCallRedis, fake_embed_text
+from integration_helpers import FakeLLM, PerCallRedis, fake_embedding
+from llm_fakes import ScriptedEmbedder
 
 
 def _guard_names() -> str:
@@ -101,6 +102,18 @@ async def _reset_state():
     engine = create_async_engine(settings.postgres_dsn, poolclass=NullPool)
     tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
     async with engine.begin() as conn:
+        # The previous test has finished, so any connection still holding an OPEN
+        # TRANSACTION on this (dedicated, _test) database is a leak -- typically an
+        # app task that TestClient cancelled mid-transaction. Such a connection would
+        # make TRUNCATE wait forever, so terminate it. Plain idle connections (e.g.
+        # the pool of the live uvicorn server in test_live_server_lifecycle) are left
+        # alone. The lock timeout below makes any REMAINING block fail loudly
+        # instead of hanging the run.
+        await conn.execute(text(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND state LIKE 'idle in transaction%'"))
+        await conn.execute(text("SET LOCAL lock_timeout = '15s'"))
         await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
@@ -114,10 +127,12 @@ async def _reset_state():
 
 @pytest.fixture(autouse=True)
 def clean_state(app_bound_to_test_db, monkeypatch):
-    """Every test starts with empty tables, no session keys, fake Gemini
-    embeddings, and real Redis reached through a per-call client."""
+    """Every test starts with empty tables, no session keys, deterministic fake
+    embeddings, and real Redis reached through a per-call client. Embeddings are
+    faked at the Gemini SDK layer, so the production embed/retry code runs in
+    every integration test; failure tests simply replace the fake with a script."""
     asyncio.run(_reset_state())
-    monkeypatch.setattr("app.retrieval.retriever.embed_text", fake_embed_text)
+    monkeypatch.setattr("app.retrieval.retriever._genai_client", ScriptedEmbedder(vector_fn=fake_embedding))
     monkeypatch.setattr("app.memory.session_memory.get_redis", lambda: PerCallRedis())
 
 
