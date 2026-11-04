@@ -159,6 +159,59 @@ loudly instead of skipping. The schema comes from the SQLAlchemy models
 (`create_all`); it does not exercise migrations because none exist yet. In CI
 this runs as the separate `integration` job with service containers.
 
+## Authorization and abuse controls
+
+**Roles.** The role is stored on the user, copied into the dashboard token at
+login, and enforced per endpoint (`app/api/deps.py`):
+
+| Endpoint | admin | agent | viewer |
+| --- | --- | --- | --- |
+| List documents, list/read conversations | yes | yes | yes |
+| Upload / delete documents | yes | no (403) | no (403) |
+| Mint a chat ticket | yes | yes | no (403) |
+
+`/auth/register` always creates an `admin`. There is no endpoint yet to add
+`agent` or `viewer` users, so those rows are created directly in the database.
+A role change takes effect at the user's next login: tokens last 24 h and are not
+revoked.
+
+**Secrets and accounts.**
+- `ENVIRONMENT=production` refuses to start unless `JWT_SECRET` is at least 32
+  characters, not a placeholder (for example `change_me...`) and not degenerate
+  (for example one repeated character). Development stays permissive.
+- Passwords must be 12 characters to 72 **bytes** (bcrypt's real limit; longer
+  passwords were previously truncated silently). Emails are stored lowercase and
+  matched case-insensitively. Login does one bcrypt check even for an unknown
+  email, so timing does not reveal which emails exist. A duplicate email, including a lost
+  race between two simultaneous registrations, returns 409 and leaves no orphan business.
+- bcrypt runs in a worker thread, so a login no longer blocks the event loop.
+
+**Rate limits** (Redis, fixed window; `RATE_LIMIT_*` variables; 429 with `Retry-After`):
+
+| Action | Default | Keyed by |
+| --- | --- | --- |
+| Login | 10 / minute and 10 / 15 minutes | client IP; email |
+| Register | 5 / hour | client IP |
+| Mint chat ticket | 30 / minute | user |
+| Chat messages | 60 / minute | tenant (WebSocket `rate_limited` frame with `retry_after`) |
+
+Keys hash the IP or email, so Redis holds no raw personal data. Set
+`REGISTRATION_ENABLED=false` to turn off self-service signup (the default is on
+so local development works; production logs a warning while it is on).
+
+**Known limits.**
+- **Fails open:** if Redis is down the limiter allows requests (logged as
+  `rate_limit_unavailable`) rather than locking every customer out.
+- **Fixed windows** allow up to twice the limit across a window boundary.
+- **Per-email limit:** an attacker can slow a victim's logins for up to 15
+  minutes; there is no permanent lockout.
+- **Behind a proxy**, run uvicorn with `--proxy-headers` and `--forwarded-allow-ips`
+  so the limiter sees the real client IP; otherwise everyone shares one limit.
+- Email lookup uses `lower(email)`, which the existing index does not cover.
+  Fine at this scale; the proper fix is a lowercase unique index via a migration.
+- Registration still reveals whether an email exists (inherent without email
+  verification); the register limit slows enumeration.
+
 ## Authentication model
 
 Two credentials, deliberately not interchangeable (`app/core/security.py`):
@@ -198,7 +251,7 @@ are rejected; users simply log in again.
 - A ticket is not single-use: it can be replayed on its session until it
   expires. Expiry is checked when the connection opens; an already-open
   connection is not cut off when the ticket expires.
-- Ticket minting is not rate limited yet.
+- Ticket minting is rate limited per user (see "Authorization and abuse controls").
 
 ## Failure handling
 

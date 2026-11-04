@@ -12,7 +12,9 @@ not mid-request, (2) every module imports the same validated object,
 (3) tests can override settings cleanly via env vars or fixtures.
 """
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +40,21 @@ class Settings(BaseSettings):
     # misconfiguration cannot turn it back into a long-lived credential.
     chat_ticket_ttl_seconds: int = Field(default=60, ge=5, le=900)
 
+    # --- Deployment mode and abuse controls ---
+    # "production" turns on strict startup checks (see the JWT_SECRET validator).
+    environment: Literal["development", "production"] = "development"
+    # Self-service business signup. Open by default so local development works;
+    # set REGISTRATION_ENABLED=false once real tenants are provisioned.
+    registration_enabled: bool = True
+    # Fixed-window limits, counted in Redis. If Redis is down the limiter fails
+    # OPEN (logged), because failing closed would lock every customer out.
+    rate_limit_enabled: bool = True
+    rate_limit_login_per_ip_per_minute: int = Field(default=10, ge=1, le=100000)
+    rate_limit_login_per_email_per_15min: int = Field(default=10, ge=1, le=100000)
+    rate_limit_register_per_ip_per_hour: int = Field(default=5, ge=1, le=100000)
+    rate_limit_ticket_per_user_per_minute: int = Field(default=30, ge=1, le=100000)
+    rate_limit_messages_per_tenant_per_minute: int = Field(default=60, ge=1, le=100000)
+
     # --- Failure policy (see README "Failure handling") ---
     # Every call to Gemini (chat and embeddings) shares one policy: a per-attempt
     # timeout, and a bounded number of attempts for TRANSIENT errors only
@@ -58,7 +75,27 @@ class Settings(BaseSettings):
     max_conversation_turns: int = 30
     session_ttl_seconds: int = 3600  # Redis session expiry (1 hr of inactivity)
     log_level: str = "INFO"
-    environment: str = "development"
 
+    @model_validator(mode="after")
+    def _check_jwt_secret(self):
+        """The JWT secret signs every credential, so a guessable one is a full
+        authentication bypass. Production refuses to start with a weak one;
+        development stays permissive (CI and local runs use short throwaway
+        secrets). An empty secret is never acceptable."""
+        secret = self.jwt_secret
+        if not secret.strip():
+            raise ValueError("JWT_SECRET must not be empty")
+        if self.environment == "production":
+            if len(secret) < 32:
+                raise ValueError("JWT_SECRET must be at least 32 characters when ENVIRONMENT=production")
+            if any(marker in secret.lower() for marker in _PLACEHOLDER_MARKERS):
+                raise ValueError("JWT_SECRET looks like a placeholder; generate a random one (e.g. `openssl rand -hex 32`)")
+            if len(set(secret)) < 8:
+                raise ValueError("JWT_SECRET has too little variety to be random")
+        return self
+
+
+# Substrings that mark a copied-from-the-docs secret rather than a generated one.
+_PLACEHOLDER_MARKERS = ("change_me", "changeme", "change-me", "your_secret", "your-secret", "replace_me", "example")
 
 settings = Settings()

@@ -22,9 +22,21 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    config.addinivalue_line("markers", "ratelimit: exercise the real rate limiter (with a fake or real Redis)")
     config.addinivalue_line(
         "markers", "integration: needs real PostgreSQL (pgvector) + Redis; opt in with --run-integration"
     )
+
+
+@pytest.fixture(autouse=True)
+def _rate_limits_off_unless_requested(request, monkeypatch):
+    """Unit tests have no Redis, and the limiter would otherwise wait on a dead
+    connection for every login/register. Integration tests (real Redis) and tests
+    marked `ratelimit` get the real limiter."""
+    if "integration" in request.keywords or "ratelimit" in request.keywords:
+        return
+    from app.config import settings
+    monkeypatch.setattr(settings, "rate_limit_enabled", False)
 
 
 def pytest_collection_modifyitems(config, items):

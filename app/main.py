@@ -13,9 +13,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.failures import CATALOGUE, code_for_exception
+from app.core.failures import CATALOGUE, RateLimitExceeded, code_for_exception
 from app.core.log_redaction import install_token_redaction
 from app.core.upstream import UpstreamError
+from app.config import settings
 from app.db.session import engine
 from app.api import auth, documents, conversations
 
@@ -32,13 +33,14 @@ async def _failure_response(request: Request, exc: Exception) -> JSONResponse:
     code = code_for_exception(exc)
     message, _retryable, http_status = CATALOGUE[code]
     logger.error("request_failed", code=code, error_type=type(exc).__name__, path=request.url.path)
-    headers = {"Retry-After": "5"} if http_status == 503 else None
+    retry_after = getattr(exc, "retry_after", None)
+    headers = {"Retry-After": str(retry_after)} if retry_after else ({"Retry-After": "5"} if http_status == 503 else None)
     return JSONResponse(status_code=http_status, content={"detail": message, "code": code}, headers=headers)
 
 
 # Registered per class so ordinary HTTPException/validation handling is untouched.
 # A raw OSError in a REST handler is a refused/reset database connection.
-for _exc_type in (UpstreamError, SQLAlchemyError, OSError):
+for _exc_type in (UpstreamError, SQLAlchemyError, OSError, RateLimitExceeded):
     app.add_exception_handler(_exc_type, _failure_response)
 
 app.include_router(auth.router)
@@ -52,7 +54,12 @@ async def startup():
         # Idempotent -- safe on every boot. pgvector must exist before
         # any table with a Vector column can be created or queried.
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    logger.info("shrivox_startup_complete")
+    # Loud, structured warnings for settings that are fine locally but wrong in production.
+    if settings.environment == "production" and settings.registration_enabled:
+        logger.warning("registration_open_in_production", hint="set REGISTRATION_ENABLED=false once tenants are provisioned")
+    if len(settings.jwt_secret) < 32:
+        logger.warning("jwt_secret_short", length=len(settings.jwt_secret), hint="use at least 32 random characters")
+    logger.info("shrivox_startup_complete", environment=settings.environment)
 
 
 @app.get("/health")
