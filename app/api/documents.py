@@ -20,7 +20,7 @@ from app.config import settings
 from app.db.models import Document, KnowledgeChunk
 from app.retrieval.chunking import chunk_text
 from app.retrieval.retriever import embed_texts
-from app.api.deps import get_current_user, CurrentUser
+from app.api.deps import get_current_user, CurrentUser, require_manager
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
@@ -41,7 +41,7 @@ class DocumentUploadRequest(BaseModel):
 
 
 @router.post("/upload", status_code=201)
-async def upload_document(payload: DocumentUploadRequest, current_user: CurrentUser = Depends(get_current_user),
+async def upload_document(payload: DocumentUploadRequest, current_user: CurrentUser = Depends(require_manager),
                            db: AsyncSession = Depends(get_db)):
     chunks = chunk_text(payload.text)
     if not chunks:
@@ -79,7 +79,7 @@ async def list_documents(current_user: CurrentUser = Depends(get_current_user), 
 
 
 @router.delete("/{document_id}")
-async def delete_document(document_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user),
+async def delete_document(document_id: uuid.UUID, current_user: CurrentUser = Depends(require_manager),
                            db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Document).where(Document.id == document_id, Document.business_id == current_user.business_id)

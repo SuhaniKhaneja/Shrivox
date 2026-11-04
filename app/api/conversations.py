@@ -35,6 +35,7 @@ from app.db.session import AsyncSessionLocal, get_db
 from app.db.models import Call, Message
 from app.config import settings
 from app.core.failures import CATALOGUE, DB_ERRORS, REDIS_ERRORS, code_for_exception
+from app.core.ratelimit import check as rate_check
 from app.core.security import SCOPE_CHAT, TokenError, decode_token
 from app.api.deps import get_current_user, CurrentUser
 
@@ -161,9 +162,9 @@ def parse_client_frame(raw: str) -> str:
     return text
 
 
-def _error_frame(code: str) -> dict:
+def _error_frame(code: str, **extra) -> dict:
     message, retryable, _http = CATALOGUE[code]
-    return {"type": "error", "code": code, "message": message, "retryable": retryable}
+    return {"type": "error", "code": code, "message": message, "retryable": retryable, **extra}
 
 
 async def _send(websocket: WebSocket, payload: dict) -> bool:
@@ -215,6 +216,14 @@ async def _serve(websocket: WebSocket, db: AsyncSession, call_id: uuid.UUID,
             user_message = parse_client_frame(raw)
         except FrameError as exc:
             if not await _send(websocket, _error_frame(exc.code)):
+                return
+            continue
+
+        # Per-tenant message budget: each message costs LLM and embedding calls, so a
+        # leaked ticket or a runaway client must not be able to run up the bill.
+        decision = await rate_check("chat_tenant", str(business_id), settings.rate_limit_messages_per_tenant_per_minute, 60)
+        if not decision.allowed:
+            if not await _send(websocket, _error_frame("rate_limited", retry_after=decision.retry_after)):
                 return
             continue
 

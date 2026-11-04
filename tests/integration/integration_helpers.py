@@ -86,6 +86,15 @@ class PerCallRedis:
     async def delete(self, key):
         return await self._run(lambda c: c.delete(key))
 
+    async def incr(self, key):
+        return await self._run(lambda c: c.incr(key))
+
+    async def expire(self, key, seconds):
+        return await self._run(lambda c: c.expire(key, seconds))
+
+    async def ttl(self, key):
+        return await self._run(lambda c: c.ttl(key))
+
 
 def redis_keys(pattern: str = "shrivox:session:*") -> list[str]:
     async def go():
@@ -111,6 +120,18 @@ def db_rows(sql: str, **params) -> list[dict]:
         finally:
             await engine.dispose()
     return asyncio.run(go())
+
+
+def db_exec(sql: str, **params) -> None:
+    """Write directly (used to create users with a given role, or legacy rows the API cannot create)."""
+    async def go():
+        engine = create_async_engine(settings.postgres_dsn, poolclass=NullPool)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(sql), params)
+        finally:
+            await engine.dispose()
+    asyncio.run(go())
 
 
 def retrieve_sync(business_id, query: str, top_k: int = 3):

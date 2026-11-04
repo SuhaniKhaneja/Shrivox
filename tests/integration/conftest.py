@@ -119,8 +119,9 @@ async def _reset_state():
 
     r = Redis.from_url(settings.redis_url)
     try:
-        async for key in r.scan_iter(match="shrivox:session:*"):
-            await r.delete(key)
+        for pattern in ("shrivox:session:*", "shrivox:rl:*"):
+            async for key in r.scan_iter(match=pattern):
+                await r.delete(key)
     finally:
         await r.aclose()
 

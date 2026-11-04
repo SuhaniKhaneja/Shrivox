@@ -76,12 +76,27 @@ class IssuedChatTicket:
     expires_in: int
 
 
+BCRYPT_MAX_BYTES = 72  # bcrypt ignores everything past 72 bytes (newer releases raise instead)
+
+
 def hash_password(plain_password: str) -> str:
-    return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
+    raw = plain_password.encode()
+    if len(raw) > BCRYPT_MAX_BYTES:
+        # Never truncate silently: two different long passwords would hash identically.
+        raise ValueError("password exceeds bcrypt's 72-byte limit")
+    return bcrypt.hashpw(raw, bcrypt.gensalt()).decode()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    """False (never an exception) for anything that cannot match: an over-long
+    password, or a stored value that is not a valid bcrypt hash."""
+    raw = plain_password.encode()
+    if len(raw) > BCRYPT_MAX_BYTES:
+        return False
+    try:
+        return bcrypt.checkpw(raw, hashed_password.encode())
+    except ValueError:
+        return False
 
 
 def create_access_token(user_id: uuid.UUID, business_id: uuid.UUID, role: str) -> str:

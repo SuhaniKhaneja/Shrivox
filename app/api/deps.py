@@ -12,6 +12,8 @@ tenant-scoping logic wrong, not one per route handler.
 
 import uuid
 
+import structlog
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -25,6 +27,9 @@ from app.core.security import (
 # auto_error=False so a missing/blank Authorization header yields a proper 401
 # (FastAPI's default is 403, which is the wrong status for "not authenticated").
 bearer_scheme = HTTPBearer(auto_error=False)
+
+logger = structlog.get_logger()
+
 
 def _unauthenticated() -> HTTPException:
     return HTTPException(
@@ -55,3 +60,26 @@ async def get_current_user(
         raise _unauthenticated()
 
     return CurrentUser(user_id=claims.user_id, business_id=claims.business_id, role=claims.role)
+
+
+# ------------------------------------------------------------------- roles
+#
+# The role comes from the verified token (issued from the users table at login).
+# Policy, in one place:
+#   admin   everything, including editing the knowledge base
+#   agent   read everything, and mint chat tickets (operate the chat)
+#   viewer  read-only: list documents, list/read conversations
+# Endpoints with no role dependency are open to any authenticated dashboard user (= read).
+# A role change takes effect at the user's next login: tokens live 24h and are not revoked.
+
+def require_role(*allowed: str):
+    async def dependency(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        if user.role not in allowed:
+            logger.warning("role_denied", role=user.role)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your role does not permit this action")
+        return user
+    return dependency
+
+
+require_manager = require_role("admin")
+require_operator = require_role("admin", "agent")

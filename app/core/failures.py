@@ -15,6 +15,14 @@ from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 
 from app.core.upstream import UpstreamEmptyResponse, UpstreamError, UpstreamRejected, UpstreamUnavailable
 
+class RateLimitExceeded(Exception):
+    """Too many requests in the current window. `retry_after` is in seconds."""
+
+    def __init__(self, retry_after: int):
+        super().__init__("rate limit exceeded")
+        self.retry_after = retry_after
+
+
 # code -> (customer-safe message, retryable, HTTP status when raised from a REST endpoint)
 CATALOGUE: dict[str, tuple[str, bool, int]] = {
     "invalid_frame": ('Send a text frame containing a JSON object such as {"text": "..."}.', False, 400),
@@ -27,6 +35,7 @@ CATALOGUE: dict[str, tuple[str, bool, int]] = {
     "embedding_rejected": ("Knowledge search could not process this request.", False, 502),
     "database_unavailable": ("The service is temporarily unavailable. Please try again.", True, 503),
     "turn_timeout": ("The request took too long. Please try again.", True, 504),
+    "rate_limited": ("Too many requests. Please slow down and try again shortly.", True, 429),
     "internal_error": ("Something went wrong. Please try again.", False, 500),
 }
 
@@ -44,6 +53,8 @@ def is_db_unavailable(exc: BaseException) -> bool:
 
 
 def code_for_exception(exc: BaseException) -> str:
+    if isinstance(exc, RateLimitExceeded):
+        return "rate_limited"
     if isinstance(exc, UpstreamUnavailable):
         return f"{exc.service}_unavailable"
     if isinstance(exc, UpstreamRejected):
