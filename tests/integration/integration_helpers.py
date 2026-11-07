@@ -83,8 +83,14 @@ class PerCallRedis:
     async def set(self, key, value, ex=None):
         return await self._run(lambda c: c.set(key, value, ex=ex))
 
-    async def delete(self, key):
-        return await self._run(lambda c: c.delete(key))
+    async def delete(self, *keys):
+        return await self._run(lambda c: c.delete(*keys))
+
+    async def lrange(self, key, start, stop):
+        return await self._run(lambda c: c.lrange(key, start, stop))
+
+    def pipeline(self, transaction=True):
+        return _PerCallPipeline(self, transaction)
 
     async def incr(self, key):
         return await self._run(lambda c: c.incr(key))
@@ -94,6 +100,34 @@ class PerCallRedis:
 
     async def ttl(self, key):
         return await self._run(lambda c: c.ttl(key))
+
+
+class _PerCallPipeline:
+    """Queues commands, then runs them as ONE real MULTI/EXEC on a fresh client
+    obtained through the owner's `_run` (so outage-injecting subclasses still apply)."""
+
+    def __init__(self, owner: PerCallRedis, transaction: bool):
+        self._owner, self._transaction, self._ops = owner, transaction, []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __getattr__(self, name):
+        def queue(*args, **kwargs):
+            self._ops.append((name, args, kwargs))
+            return self
+        return queue
+
+    async def execute(self):
+        async def op(client):
+            pipe = client.pipeline(transaction=self._transaction)
+            for name, args, kwargs in self._ops:
+                getattr(pipe, name)(*args, **kwargs)
+            return await pipe.execute()
+        return await self._owner._run(op)
 
 
 def redis_keys(pattern: str = "shrivox:session:*") -> list[str]:

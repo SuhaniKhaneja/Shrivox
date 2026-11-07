@@ -274,37 +274,27 @@ def test_frame_parser_accepts_and_strips_a_valid_message(monkeypatch):
 
 # ----------------------------------------------------------- session memory
 
-class CountingRedis:
-    def __init__(self):
-        self.store, self.sets = {}, 0
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ex=None):
-        self.sets += 1
-        self.store[key] = value
-
-
-def test_append_turns_writes_both_messages_in_a_single_redis_write():
+def test_append_turns_writes_both_messages_in_a_single_redis_transaction():
     import uuid
     from app.memory import session_memory
-    r, biz = CountingRedis(), uuid.uuid4()
+    from auth_helpers import FakeRedis
+    r, biz = FakeRedis(), uuid.uuid4()
     with patch("app.memory.session_memory.get_redis", return_value=r):
         history = run(session_memory.append_turns(biz, "s1", [("customer", "q"), ("agent", "a")]))
-    assert r.sets == 1
+    assert r.executed_pipelines == 1
     assert [t["role"] for t in history] == ["customer", "agent"]
 
 
 def test_append_turns_still_bounds_the_window(monkeypatch):
     import uuid
     from app.memory import session_memory
+    from auth_helpers import FakeRedis
     monkeypatch.setattr(settings, "max_conversation_turns", 4)
-    r, biz = CountingRedis(), uuid.uuid4()
+    r, biz = FakeRedis(), uuid.uuid4()
     with patch("app.memory.session_memory.get_redis", return_value=r):
         for i in range(5):
             run(session_memory.append_turns(biz, "s1", [("customer", f"q{i}"), ("agent", f"a{i}")]))
-    stored = json.loads(next(iter(r.store.values())))
+    stored = [json.loads(x) for x in next(iter(r.store.values()))]
     assert [t["content"] for t in stored] == ["q3", "a3", "q4", "a4"]
 
 

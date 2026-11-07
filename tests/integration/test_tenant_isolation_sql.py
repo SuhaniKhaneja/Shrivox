@@ -162,7 +162,8 @@ def test_same_session_id_under_two_tenants_gets_separate_calls_and_separate_redi
     assert {c["business_id"] for c in calls} == {str(a.business_id), str(b.business_id)}
 
     keys = redis_keys()
-    assert sorted(k.split(":")[2] for k in keys) == sorted([str(a.business_id), str(b.business_id)])
+    # key layout: shrivox:session:v2:<business_id>:<session_id> -- parse from the end so a prefix change can't skew it
+    assert sorted(k.split(":")[-2] for k in keys) == sorted([str(a.business_id), str(b.business_id)])
 
     prompts = llm.generation_prompts()
     assert len(prompts) == 3

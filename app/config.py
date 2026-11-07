@@ -72,8 +72,10 @@ class Settings(BaseSettings):
     redis_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
 
     # --- App behavior ---
-    max_conversation_turns: int = 30
-    session_ttl_seconds: int = 3600  # Redis session expiry (1 hr of inactivity)
+    # Messages kept per session (a customer/agent turn is TWO messages). Bounded:
+    # 0 would make Redis' LTRIM keep everything, i.e. silently disable the cap.
+    max_conversation_turns: int = Field(default=30, ge=2, le=500)
+    session_ttl_seconds: int = Field(default=3600, ge=60)  # Redis session expiry (1 hr of inactivity)
     log_level: str = "INFO"
 
     @model_validator(mode="after")
