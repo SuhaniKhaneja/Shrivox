@@ -27,7 +27,7 @@ from datetime import datetime
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.agents.graph import shrivox_agent
 from app.memory.session_memory import get_history, append_turns, is_valid_session_id
@@ -317,15 +317,34 @@ async def _finalize_call(db: AsyncSession, call_id: uuid.UUID, outcome: str) -> 
 
 
 async def _get_or_create_call(db: AsyncSession, business_id: uuid.UUID, session_id: str) -> Call:
+    """The call row for (tenant, session), created on first connect.
+
+    A check-then-insert is a race: a chat ticket is replayable until it expires, so
+    several connections can open for one session at once, and each saw "no call
+    yet" and inserted its own. Measured: 20 simultaneous connects made 20 rows, and
+    from then on every reconnect for that session raised MultipleResultsFound.
+
+    The fix serialises creators per (tenant, session) with a transaction-scoped
+    Postgres advisory lock. It needs no schema change (a unique index would, and
+    cannot be applied to an existing database without a migration) and it is
+    released by the commit below on EVERY path -- the caller keeps this session
+    open for the whole WebSocket connection, so a lock that outlived this function
+    would block every other connect for the session until that one disconnected.
+
+    If duplicates already exist (rows created before this fix), the earliest call
+    wins instead of raising, so affected sessions heal on their next connect."""
+    await db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(f"call:{business_id}:{session_id}", 0))))
+
     result = await db.execute(
         select(Call).where(Call.business_id == business_id, Call.caller_ref == session_id)
+        .order_by(Call.started_at, Call.id).limit(1)
     )
-    existing = result.scalar_one_or_none()
+    existing = result.scalars().first()
     if existing:
         if existing.status in ("completed", "failed"):  # the customer reconnected: the call is live again
             existing.status = "active"
             existing.ended_at = None
-            await db.commit()
+        await db.commit()  # releases the advisory lock (and applies the status change, if any)
         return existing
 
     call = Call(id=uuid.uuid4(), business_id=business_id, channel="browser",

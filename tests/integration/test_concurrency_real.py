@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 from redis.asyncio import Redis
+from sqlalchemy import select
 
 from app.config import settings
 from app.memory import session_memory
@@ -72,6 +73,105 @@ def test_window_is_enforced_atomically_under_concurrency(monkeypatch):
     assert len(history) == 10
     for i in range(0, 10, 2):  # whatever survives is still whole pairs, customer first
         assert history[i]["role"] == "customer" and history[i + 1]["content"] == "a" + history[i]["content"][1:]
+
+
+# ------------------------------------------------------- call get-or-create
+
+async def _new_business(name="race-tenant"):
+    from app.db.models import Business
+    from app.db.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        business = Business(id=uuid.uuid4(), name=name)
+        db.add(business)
+        await db.commit()
+        return business.id
+
+
+async def _race_connects(business_id, session_id, racers=20):
+    """Open `racers` sessions, each already holding a live connection, then run
+    _get_or_create_call on all of them at once -- what N simultaneous WebSocket
+    connects with one (replayable) chat ticket look like. Pre-warming matters: with
+    a cold pool, connection setup serialises the racers and hides the race."""
+    from app.api.conversations import _get_or_create_call
+    from app.db.session import AsyncSessionLocal
+
+    sessions = [AsyncSessionLocal() for _ in range(racers)]
+    try:
+        for s in sessions:
+            await s.connection()
+        calls = await asyncio.gather(*[_get_or_create_call(s, business_id, session_id) for s in sessions])
+        return [c.id for c in calls]
+    finally:
+        for s in sessions:
+            await s.close()
+
+
+def test_concurrent_connects_with_one_session_id_create_exactly_one_call():
+    from app.db.models import Call
+    from app.db.session import AsyncSessionLocal
+    from sqlalchemy import func, select
+
+    async def scenario():
+        business_id = await _new_business()
+        sid = "race-" + uuid.uuid4().hex[:12]
+        ids = await _race_connects(business_id, sid)
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(func.count()).select_from(Call).where(Call.business_id == business_id, Call.caller_ref == sid)
+            )).scalar_one()
+        return ids, rows
+
+    ids, rows = asyncio.run(scenario())
+    assert rows == 1, f"{rows} Call rows were created for one session"
+    assert len(set(ids)) == 1, "racers were handed different calls"
+
+
+def test_a_session_that_already_has_duplicate_calls_still_reconnects():
+    """Databases that hit the race before the fix hold duplicate rows. Those
+    sessions used to raise MultipleResultsFound on EVERY later connect; they must
+    heal by resolving to the earliest call."""
+    from datetime import datetime, timedelta
+    from app.api.conversations import _get_or_create_call
+    from app.db.models import Call
+    from app.db.session import AsyncSessionLocal
+
+    async def scenario():
+        business_id = await _new_business()
+        sid = "legacy-" + uuid.uuid4().hex[:12]
+        base = datetime.utcnow()
+        async with AsyncSessionLocal() as db:
+            for offset in (0, 1, 2):
+                db.add(Call(id=uuid.uuid4(), business_id=business_id, channel="browser", caller_ref=sid,
+                            status="active", started_at=base + timedelta(seconds=offset)))
+            await db.commit()
+            first = (await db.execute(
+                select(Call.id).where(Call.caller_ref == sid).order_by(Call.started_at))).scalars().first()
+        async with AsyncSessionLocal() as db:
+            call = await _get_or_create_call(db, business_id, sid)
+        return first, call.id
+
+    earliest, resolved = asyncio.run(scenario())
+    assert resolved == earliest
+
+
+def test_get_or_create_does_not_hold_its_lock_after_returning():
+    """The advisory lock is transaction-scoped. If the function returned without
+    ending its transaction, the lock would be held for the whole WebSocket
+    connection and every other connect for that session would hang."""
+    from app.api.conversations import _get_or_create_call
+    from app.db.session import AsyncSessionLocal
+
+    async def scenario():
+        business_id = await _new_business()
+        sid = "lock-" + uuid.uuid4().hex[:12]
+        async with AsyncSessionLocal() as creator, AsyncSessionLocal() as finder, AsyncSessionLocal() as third:
+            await _get_or_create_call(creator, business_id, sid)   # create path; session stays open
+            await _get_or_create_call(finder, business_id, sid)    # existing-call path; session stays open
+            # Both sessions above are still open, as they are for a live WebSocket. A third
+            # connection must not wait on a lock either of them forgot to release.
+            return await asyncio.wait_for(_get_or_create_call(third, business_id, sid), timeout=5)
+
+    asyncio.run(scenario())  # a held lock would raise asyncio.TimeoutError here
 
 
 def test_session_key_expires(monkeypatch):
