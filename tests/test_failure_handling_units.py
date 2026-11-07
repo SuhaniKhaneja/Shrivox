@@ -320,3 +320,31 @@ def test_finalize_call_never_raises_even_if_the_database_is_gone():
 def test_failure_policy_settings_are_bounded(field, bad):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, google_api_key="k", jwt_secret="s", **{field: bad})
+
+
+# ------------------------------------------------------ transcript ordering
+
+def test_a_turns_messages_get_strictly_ordered_timestamps_even_on_a_frozen_clock():
+    """Customer message and reply are flushed together; on a coarse clock a column
+    default could tie them and make the transcript order arbitrary."""
+    import uuid
+    from datetime import datetime as real_datetime
+    from app.api import conversations
+
+    class FrozenClock(real_datetime):
+        @classmethod
+        def utcnow(cls):
+            return cls(2026, 11, 7, 12, 0, 0)
+
+    db = MagicMock()
+    db.add_all = MagicMock()
+    db.execute, db.commit = AsyncMock(), AsyncMock()
+    result = {"intent": "general_query", "retrieved_doc_ids": [], "response_text": "ok",
+              "safety_flag": None, "token_count": 0, "escalate": False}
+
+    with patch.object(conversations, "datetime", FrozenClock):
+        run(conversations._persist_turn(db, uuid.uuid4(), 0, "hello", result, 5))
+
+    customer, agent = db.add_all.call_args.args[0]
+    assert (customer.role, agent.role) == ("customer", "agent")
+    assert customer.created_at < agent.created_at

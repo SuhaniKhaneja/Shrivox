@@ -193,7 +193,17 @@ revoked.
 | Login | 10 / minute and 10 / 15 minutes | client IP; email |
 | Register | 5 / hour | client IP |
 | Mint chat ticket | 30 / minute | user |
-| Chat messages | 60 / minute | tenant (WebSocket `rate_limited` frame with `retry_after`) |
+| Chat messages | 20 / minute | session, checked first (WebSocket `rate_limited` frame with `retry_after`) |
+| Chat messages | 60 / minute | tenant, checked second |
+
+The session budget is checked before the tenant budget, so one flooding session is
+stopped without spending the business's allowance and locking out its other customers.
+
+**Pagination.** `GET /api/v1/conversations` and `GET /api/v1/documents` take `limit`
+(1-500, default 100) and `offset`, return newest first, and send the total in the
+`X-Total-Count` header; the body is still a plain JSON array. Messages inside one
+conversation (`GET /api/v1/conversations/{id}`) take `limit` (1-2000, default 500) and
+`offset`, and the response carries `message_count`. Out-of-range values get a 422.
 
 Keys hash the IP or email, so Redis holds no raw personal data. Set
 `REGISTRATION_ENABLED=false` to turn off self-service signup (the default is on
