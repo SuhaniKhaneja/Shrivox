@@ -119,8 +119,45 @@ async def upsert_chunk(db: AsyncSession, document_id: uuid.UUID, business_id: uu
     return chunk
 
 
+# A message at most this many words long is treated as a possible follow-up that
+# leans on earlier turns for its topic ("aur kitne din lagenge?"). Longer messages
+# are assumed to be self-contained.
+FOLLOW_UP_MAX_WORDS = 12
+# How much of the previous customer message is borrowed as context.
+CONTEXT_MAX_CHARS = 300
+
+_CUSTOMER_ROLES = {"customer", "user"}  # "user" is the legacy role name
+
+
+def contextual_query(message: str, history: list[dict]) -> str | None:
+    """A second retrieval query for a short follow-up, or None when not needed.
+
+    Retrieval used to embed only the latest message. A follow-up like "aur kitne
+    din lagenge?" names no topic, so its vector matched nothing and the model
+    answered without the policy it needed. The topic lives in what the CUSTOMER
+    asked before (the agent's own reply is deliberately not used: it would anchor
+    retrieval on the agent's wording rather than the customer's need)."""
+    if not history or len(message.split()) > FOLLOW_UP_MAX_WORDS:
+        return None
+    previous = next((m.get("content", "") for m in reversed(history) if m.get("role") in _CUSTOMER_ROLES), "")
+    previous = previous.strip()[:CONTEXT_MAX_CHARS]
+    return f"{previous} {message}" if previous else None
+
+
+async def _nearest(db: AsyncSession, business_id: uuid.UUID, vector: list[float], limit: int):
+    distance = KnowledgeChunk.embedding.cosine_distance(vector)
+    stmt = (
+        select(KnowledgeChunk, distance.label("distance"))
+        .where(KnowledgeChunk.business_id == business_id)  # the tenant boundary, in SQL, for every search
+        .order_by(distance)
+        .limit(limit)
+    )
+    return (await db.execute(stmt)).all()
+
+
 async def retrieve(db: AsyncSession, business_id: uuid.UUID, query: str,
-                    top_k: int = 3, score_threshold: float = 0.25) -> list[RetrievedDoc]:
+                    top_k: int = 3, score_threshold: float = 0.25,
+                    context_query: str | None = None) -> list[RetrievedDoc]:
     """
     Returns the top_k most relevant KB chunks for a query, scoped to one
     business_id only.
@@ -132,25 +169,32 @@ async def retrieve(db: AsyncSession, business_id: uuid.UUID, query: str,
     vectors and increases with dissimilarity, so we convert to a
     similarity score (1 - distance) to keep the same threshold
     semantics as before.
-    """
-    distance = KnowledgeChunk.embedding.cosine_distance(await embed_text(query, task_type="RETRIEVAL_QUERY"))
-    stmt = (
-        select(KnowledgeChunk, distance.label("distance"))
-        .where(KnowledgeChunk.business_id == business_id)
-        .order_by(distance)
-        .limit(top_k)
-    )
-    result = await db.execute(stmt)
-    rows = result.all()
 
-    docs = []
-    for chunk, dist in rows:
-        similarity = 1 - dist
-        if similarity >= score_threshold:
-            docs.append(RetrievedDoc(
-                id=str(chunk.id),
-                text=chunk.content,
-                score=similarity,
-                metadata=chunk.chunk_metadata,
-            ))
-    return docs
+    context_query (see contextual_query) is a second phrasing of the same need that
+    carries the topic of a follow-up. Both phrasings are embedded in ONE request and
+    searched separately, each filtered by business_id; a chunk keeps the best score
+    either found. The plain query is always searched too, so a customer who changes
+    topic is not dragged back to the old one.
+    """
+    queries = [query]
+    if context_query and context_query != query:
+        queries.append(context_query)
+
+    if len(queries) == 1:
+        vectors = [await embed_text(query, task_type="RETRIEVAL_QUERY")]
+    else:
+        vectors = await embed_texts(queries, task_type="RETRIEVAL_QUERY")
+
+    best: dict[uuid.UUID, tuple[KnowledgeChunk, float]] = {}
+    for vector in vectors:
+        for chunk, dist in await _nearest(db, business_id, vector, top_k):
+            similarity = 1 - dist
+            if chunk.id not in best or similarity > best[chunk.id][1]:
+                best[chunk.id] = (chunk, similarity)
+
+    ranked = sorted(best.values(), key=lambda pair: pair[1], reverse=True)[:top_k]
+    return [
+        RetrievedDoc(id=str(chunk.id), text=chunk.content, score=similarity, metadata=chunk.chunk_metadata)
+        for chunk, similarity in ranked
+        if similarity >= score_threshold
+    ]

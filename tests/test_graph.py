@@ -197,3 +197,24 @@ async def test_token_count_covers_every_llm_call_in_the_turn():
     with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[])):
         result = await shrivox_agent.ainvoke(base_state("Can you guarantee a refund?"))
     assert result["token_count"] == 11 + 120 + 125
+
+
+@pytest.mark.asyncio
+async def test_retrieval_is_given_the_previous_customer_message_for_a_short_follow_up():
+    history = [{"role": "customer", "content": "mera refund kab milega"}, {"role": "agent", "content": "5-7 din"}]
+    retrieve = AsyncMock(return_value=[])
+    with patch("app.agents.graph.chat_completion", new=AsyncMock(side_effect=[_resp("general_query"), _resp("ok")])), \
+         patch("app.agents.graph.retrieve", new=retrieve):
+        await shrivox_agent.ainvoke({**base_state("aur kitne din lagenge"), "conversation_history": history})
+
+    assert retrieve.await_args.args[2] == "aur kitne din lagenge"                       # the message itself is still searched
+    assert retrieve.await_args.kwargs["context_query"] == "mera refund kab milega aur kitne din lagenge"
+
+
+@pytest.mark.asyncio
+async def test_retrieval_gets_no_context_on_the_first_turn():
+    retrieve = AsyncMock(return_value=[])
+    with patch("app.agents.graph.chat_completion", new=AsyncMock(side_effect=[_resp("general_query"), _resp("ok")])), \
+         patch("app.agents.graph.retrieve", new=retrieve):
+        await shrivox_agent.ainvoke(base_state("How long for my refund?"))
+    assert retrieve.await_args.kwargs["context_query"] is None

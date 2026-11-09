@@ -52,7 +52,7 @@ from app.agents.llm_client import chat_completion
 from app.core.upstream import UpstreamEmptyResponse
 from app.db.session import AsyncSessionLocal
 from app.prompts.templates import DEFAULT_INTENT, INTENT_DETECTION_PROMPT, VALID_INTENTS, build_response_prompt
-from app.retrieval.retriever import retrieve
+from app.retrieval.retriever import contextual_query, retrieve
 
 logger = structlog.get_logger()
 
@@ -144,8 +144,14 @@ async def retrieve_context(state: ConversationState) -> dict:
     # state stays plain data (no long-lived DB session threaded through
     # it), and the business_id filter happens inside retrieve() itself,
     # in the SQL WHERE clause, not here in application code.
+    message = state["user_message"]
     async with AsyncSessionLocal() as db:
-        docs = await retrieve(db, state["business_id"], state["user_message"], top_k=3)
+        docs = await retrieve(
+            db, state["business_id"], message, top_k=3,
+            # A short follow-up ("aur kitne din lagenge?") also borrows the topic of
+            # the customer's previous message; the message itself is still searched.
+            context_query=contextual_query(message, state["conversation_history"]),
+        )
 
     return {
         "retrieved_docs": [d.text for d in docs],
