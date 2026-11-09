@@ -75,3 +75,125 @@ async def test_ungrounded_promise_triggers_retry():
 
         assert result["safety_flag"] == "ungrounded_promise"
         assert result["response_text"] == "I can check the refund policy for you."
+
+
+# ============================================================================
+# Graph topology and control flow (audit: the graph used to be a straight line)
+#
+# The README and the module docstring described conditional branches, but the
+# compiled graph had ZERO conditional edges: escalation was an `if` buried inside
+# each node, a classifier verdict of `escalation_request` was ignored, and intent
+# classification and retrieval -- independent of each other -- ran back to back.
+# ============================================================================
+
+import asyncio
+
+
+def _resp(text, prompt=5, completion=2):
+    return {"text": text, "latency_ms": 10, "prompt_tokens": prompt, "completion_tokens": completion}
+
+
+def test_the_graph_has_real_conditional_edges_and_a_parallel_fan_out():
+    edges = shrivox_agent.get_graph().edges
+    conditional = {(e.source, e.target) for e in edges if e.conditional}
+
+    # escalation branches off BEFORE any I/O, and again after the classifier
+    assert ("input_guard", "escalate_response") in conditional
+    assert ("triage", "escalate_response") in conditional
+    assert ("triage", "generate_response") in conditional
+    # the output check can loop back to regenerate, bail out to a fallback, or finish
+    assert {("safety_check", "regenerate_response"), ("safety_check", "safe_fallback")} <= conditional
+    # intent classification and retrieval are siblings: both start from the guard
+    fan_out = {t for s, t in conditional if s == "input_guard"}
+    assert {"classify_intent", "retrieve_context"} <= fan_out
+
+
+@pytest.mark.asyncio
+async def test_intent_classification_and_retrieval_run_concurrently():
+    """Each branch waits (bounded) for the OTHER to have started. In a sequential
+    graph the first branch would wait for one that never starts, time out, and fail
+    this test -- so it passes only if the two genuinely overlap. No sleeps, no
+    wall-clock thresholds, so it cannot flake."""
+    classifier_started, retrieval_started = asyncio.Event(), asyncio.Event()
+
+    async def chat(messages, **kwargs):
+        if "Classify the customer's message" in messages[0]["content"]:
+            classifier_started.set()
+            await asyncio.wait_for(retrieval_started.wait(), timeout=2)
+            return _resp("refund_request")
+        return _resp("Refunds take 5-7 days.")
+
+    async def retrieve(db, business_id, query, **kwargs):
+        retrieval_started.set()
+        await asyncio.wait_for(classifier_started.wait(), timeout=2)
+        return []
+
+    with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=retrieve):
+        result = await shrivox_agent.ainvoke(base_state("How long for my refund?"))
+
+    assert result["intent"] == "refund_request" and result["escalate"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_classifier_verdict_of_escalation_request_escalates_and_skips_generation():
+    """Previously the classifier's `escalation_request` was recorded as the intent but
+    escalate stayed False, so the customer who asked for a human got a normal answer
+    (and a full generation call was spent on it)."""
+    chat = AsyncMock(side_effect=[_resp("escalation_request"), AssertionError("generation must not run")])
+    retrieved = [type("D", (), {"text": "t", "id": "11111111-1111-1111-1111-111111111111"})()]
+
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=retrieved)):
+        result = await shrivox_agent.ainvoke(base_state("mujhe kisi se baat karni hai"))
+
+    assert chat.await_count == 1                       # the classifier only
+    assert result["escalate"] is True
+    assert result["intent"] == "escalation_request"
+    assert result["safety_flag"] == "escalation_intent"
+    assert "human agent" in result["response_text"].lower()
+    assert result["retrieved_doc_ids"] == []           # nothing was used, so nothing is recorded as used
+
+
+@pytest.mark.asyncio
+async def test_a_second_unsafe_answer_is_never_shipped_it_falls_back_to_a_human():
+    """Before: one retry, then whatever came back was sent -- flagged but unchecked.
+    Now the retry is re-checked, and if it is still unsafe the customer gets a safe
+    hand-off instead of the text."""
+    chat = AsyncMock(side_effect=[
+        _resp("refund_request"),
+        _resp("I guarantee you double refund!"),
+        _resp("Honestly I promise it will be fully refunded."),   # the retry is ALSO an ungrounded promise
+    ])
+    with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[])):
+        result = await shrivox_agent.ainvoke(base_state("Can you guarantee double refund?"))
+
+    assert chat.await_count == 3                       # intent + generation + exactly ONE retry; the loop is bounded
+    assert result["escalate"] is True
+    assert result["safety_flag"] == "ungrounded_promise"
+    assert "guarantee" not in result["response_text"].lower() and "promise" not in result["response_text"].lower()
+    assert "human agent" in result["response_text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_fixes_the_answer_keeps_the_flag_but_does_not_escalate():
+    chat = AsyncMock(side_effect=[_resp("refund_request"), _resp("I guarantee a refund!"), _resp("Let me check the policy for you.")])
+    with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[])):
+        result = await shrivox_agent.ainvoke(base_state("Can you guarantee a refund?"))
+
+    assert result["response_text"] == "Let me check the policy for you."
+    assert result["safety_flag"] == "ungrounded_promise"   # analytics still see that the guardrail intervened
+    assert result["escalate"] is False
+
+
+@pytest.mark.asyncio
+async def test_token_count_covers_every_llm_call_in_the_turn():
+    """The classifier call and any retry cost tokens too. Counting only the first
+    generation under-reported the real spend of every turn."""
+    chat = AsyncMock(side_effect=[
+        _resp("refund_request", 10, 1),                 # classifier   = 11
+        _resp("I guarantee a refund!", 100, 20),        # generation   = 120
+        _resp("Let me check that.", 110, 15),           # retry        = 125
+    ])
+    with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[])):
+        result = await shrivox_agent.ainvoke(base_state("Can you guarantee a refund?"))
+    assert result["token_count"] == 11 + 120 + 125

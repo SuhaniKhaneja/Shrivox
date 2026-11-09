@@ -197,6 +197,8 @@ def test_missing_usage_metadata_entirely_does_not_crash():
 
 
 def test_reported_token_counts_are_still_summed():
+    """prompt + completion tokens are summed per call, and now across EVERY call in
+    the turn (classifier + generation): the classifier's spend used to go uncounted."""
     fake = FakeGemini(["general_query", "Sure."], usage=(12, 7))
     out = run_graph(fake, initial_state("hello"))
-    assert out["token_count"] == 19
+    assert out["token_count"] == 19 + 19
