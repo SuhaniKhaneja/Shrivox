@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     rate_limit_register_per_ip_per_hour: int = Field(default=5, ge=1, le=100000)
     rate_limit_ticket_per_user_per_minute: int = Field(default=30, ge=1, le=100000)
     rate_limit_messages_per_tenant_per_minute: int = Field(default=60, ge=1, le=100000)
+    # Checked BEFORE the tenant budget, so one runaway or abusive session cannot
+    # burn the whole tenant's allowance and lock out its other customers.
+    rate_limit_messages_per_session_per_minute: int = Field(default=20, ge=1, le=100000)
 
     # --- Failure policy (see README "Failure handling") ---
     # Every call to Gemini (chat and embeddings) shares one policy: a per-attempt
@@ -72,8 +75,10 @@ class Settings(BaseSettings):
     redis_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
 
     # --- App behavior ---
-    max_conversation_turns: int = 30
-    session_ttl_seconds: int = 3600  # Redis session expiry (1 hr of inactivity)
+    # Messages kept per session (a customer/agent turn is TWO messages). Bounded:
+    # 0 would make Redis' LTRIM keep everything, i.e. silently disable the cap.
+    max_conversation_turns: int = Field(default=30, ge=2, le=500)
+    session_ttl_seconds: int = Field(default=3600, ge=60)  # Redis session expiry (1 hr of inactivity)
     log_level: str = "INFO"
 
     @model_validator(mode="after")

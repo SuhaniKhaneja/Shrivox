@@ -60,6 +60,9 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return None
 
+    def scalar_one(self):
+        return 0  # the COUNT(*) behind X-Total-Count on list endpoints
+
 
 class _FakeSession:
     def __init__(self):

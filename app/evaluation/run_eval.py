@@ -26,6 +26,11 @@ helpfulness -- faithfulness/groundedness per the system design doc)
 is a natural next addition once there's a numeric baseline.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # run from anywhere, no PYTHONPATH needed
+
 import asyncio
 import json
 import time

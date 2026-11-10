@@ -11,6 +11,11 @@ script is just faster for local dev/demo setup (one command, no need
 to have the server running yet) since it writes directly via the ORM.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run from anywhere, no PYTHONPATH needed
+
 import asyncio
 import json
 import uuid

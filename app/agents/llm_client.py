@@ -29,7 +29,8 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
-from app.core.upstream import UpstreamEmptyResponse, call_with_retry
+from app.core.observability import LLM_CALLS, LLM_LATENCY, LLM_TOKENS, LLM_TRUNCATED
+from app.core.upstream import UpstreamEmptyResponse, UpstreamError, call_with_retry
 
 logger = structlog.get_logger()
 
@@ -73,6 +74,14 @@ def _to_gemini_contents(messages: list[dict]) -> tuple[str | None, list[types.Co
     return system_instruction, contents
 
 
+def _was_truncated(resp) -> bool:
+    """True when the first candidate stopped because it ran out of output tokens.
+    Tolerates enum or string finish reasons and a missing field (-> False)."""
+    candidates = getattr(resp, "candidates", None) or []
+    reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    return reason is not None and "MAX_TOKENS" in str(reason).upper()
+
+
 async def chat_completion(messages: list[dict], temperature: float = 0.3, max_tokens: int = 300) -> dict:
     """One Gemini chat call under the shared upstream policy (see app/core/upstream.py).
 
@@ -93,22 +102,38 @@ async def chat_completion(messages: list[dict], temperature: float = 0.3, max_to
             ),
         )
 
-    resp = await call_with_retry("llm", generate)
+    try:
+        resp = await call_with_retry("llm", generate)
+    except UpstreamError as exc:
+        LLM_CALLS.labels(type(exc).__name__).inc()
+        raise
     latency_ms = int((time.perf_counter() - start) * 1000)  # includes any retries: what the customer waited
+    LLM_LATENCY.observe(latency_ms / 1000)
 
     text = resp.text
     if not text or not text.strip():
         candidates = getattr(resp, "candidates", None) or [None]
         logger.warning("llm_empty_response", finish_reason=str(getattr(candidates[0], "finish_reason", None)))
+        LLM_CALLS.labels("empty").inc()
         raise UpstreamEmptyResponse("llm", "empty_response")
+
+    truncated = _was_truncated(resp)
+    if truncated:
+        # The model hit max_output_tokens: the customer would see a sentence cut off mid-way.
+        LLM_TRUNCATED.inc()
+        logger.warning("llm_answer_truncated", max_tokens=max_tokens)
+    LLM_CALLS.labels("ok").inc()
 
     # The SDK reports usage fields as Optional; a missing value must not crash
     # the turn after the answer has already been generated. 0 means "not
     # reported", and thinking tokens are not included in completion_tokens.
     usage = resp.usage_metadata
+    LLM_TOKENS.labels("prompt").inc(getattr(usage, "prompt_token_count", None) or 0)
+    LLM_TOKENS.labels("completion").inc(getattr(usage, "candidates_token_count", None) or 0)
     return {
         "text": text,
         "latency_ms": latency_ms,
         "prompt_tokens": getattr(usage, "prompt_token_count", None) or 0,
         "completion_tokens": getattr(usage, "candidates_token_count", None) or 0,
+        "truncated": truncated,
     }

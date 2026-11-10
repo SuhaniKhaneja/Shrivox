@@ -36,7 +36,8 @@ class FakeDB:
 
     async def execute(self, *a, **k):
         self.executes += 1
-        return SimpleNamespace(scalar_one_or_none=lambda: self.user, scalars=lambda: SimpleNamespace(all=lambda: []))
+        return SimpleNamespace(scalar_one_or_none=lambda: self.user, scalar_one=lambda: 0,
+                               scalars=lambda: SimpleNamespace(all=lambda: []))
 
     def add(self, obj):
         self.added.append(obj)
@@ -109,7 +110,6 @@ def test_role_permission_matrix(use_db, name, role, expected):
 
 def test_every_dashboard_endpoint_is_covered_by_the_role_matrix():
     """A new route that forgets role handling must not slip through unnoticed."""
-    covered = {(m, p.split("/")[-1] if "/api/v1/documents/" in p or "/conversations/" in p else p) for m, p, _, _ in ENDPOINTS.values()}
     declared = set()
     for route in app.routes:
         path = getattr(route, "path", "")
@@ -427,6 +427,7 @@ def test_ticket_minting_is_limited_per_user(use_db, rl_redis, monkeypatch):
 @pytest.mark.parametrize("field,bad", [
     ("rate_limit_login_per_ip_per_minute", 0), ("rate_limit_register_per_ip_per_hour", 0),
     ("rate_limit_messages_per_tenant_per_minute", 0), ("rate_limit_ticket_per_user_per_minute", 100001),
+    ("rate_limit_messages_per_session_per_minute", 0),
 ])
 def test_rate_limit_settings_are_bounded(field, bad):
     with pytest.raises(ValidationError):

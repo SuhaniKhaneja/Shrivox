@@ -35,7 +35,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
-EMBEDDING_DIM = 1536  # text-embedding-3-small
+EMBEDDING_DIM = 1536  # gemini-embedding-001, truncated via output_dimensionality (see retriever.py)
 
 
 class Base(DeclarativeBase):

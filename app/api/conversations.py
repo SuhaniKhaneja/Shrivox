@@ -22,12 +22,12 @@ import hmac
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import structlog
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.agents.graph import shrivox_agent
 from app.memory.session_memory import get_history, append_turns, is_valid_session_id
@@ -37,19 +37,28 @@ from app.config import settings
 from app.core.failures import CATALOGUE, DB_ERRORS, REDIS_ERRORS, code_for_exception
 from app.core.ratelimit import check as rate_check
 from app.core.security import SCOPE_CHAT, TokenError, decode_token
-from app.api.deps import get_current_user, CurrentUser
+from app.api.deps import get_current_user, CurrentUser, Page, pagination
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/api/v1", tags=["conversations"])
 
 
 @router.get("/conversations")
-async def list_conversations(current_user: CurrentUser = Depends(get_current_user),
+async def list_conversations(response: Response, page: Page = Depends(pagination()),
+                              current_user: CurrentUser = Depends(get_current_user),
                               db: AsyncSession = Depends(get_db)):
+    """Newest first. `limit`/`offset` page through the tenant's calls; the total is
+    in the X-Total-Count header. The id tie-break keeps pages stable when several
+    calls share a timestamp, so walking the pages never repeats or skips a row."""
+    total = (await db.execute(
+        select(func.count()).select_from(Call).where(Call.business_id == current_user.business_id)
+    )).scalar_one()
     result = await db.execute(
-        select(Call).where(Call.business_id == current_user.business_id).order_by(Call.started_at.desc())
+        select(Call).where(Call.business_id == current_user.business_id)
+        .order_by(Call.started_at.desc(), Call.id.desc()).limit(page.limit).offset(page.offset)
     )
     calls = result.scalars().all()
+    response.headers["X-Total-Count"] = str(total)
     return [
         {"id": str(c.id), "channel": c.channel, "status": c.status,
          "started_at": c.started_at, "ended_at": c.ended_at, "summary": c.summary}
@@ -58,19 +67,27 @@ async def list_conversations(current_user: CurrentUser = Depends(get_current_use
 
 
 @router.get("/conversations/{call_id}")
-async def get_conversation(call_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user),
+async def get_conversation(call_id: uuid.UUID, page: Page = Depends(pagination(default_limit=500, max_limit=2000)),
+                            current_user: CurrentUser = Depends(get_current_user),
                             db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Call).where(Call.id == call_id, Call.business_id == current_user.business_id))
     call = result.scalar_one_or_none()
     if not call:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    msg_result = await db.execute(select(Message).where(Message.call_id == call_id).order_by(Message.created_at))
+    message_count = (await db.execute(
+        select(func.count()).select_from(Message).where(Message.call_id == call_id)
+    )).scalar_one()
+    msg_result = await db.execute(
+        select(Message).where(Message.call_id == call_id)
+        .order_by(Message.created_at, Message.id).limit(page.limit).offset(page.offset)
+    )
     messages = msg_result.scalars().all()
 
     return {
         "id": str(call.id), "channel": call.channel, "status": call.status,
         "summary": call.summary,
+        "message_count": message_count,  # total, so a client can tell it holds a slice
         "messages": [
             {"role": m.role, "content": m.content, "intent": m.intent,
              "safety_flag": m.safety_flag, "latency_ms": m.latency_ms, "created_at": m.created_at}
@@ -219,10 +236,20 @@ async def _serve(websocket: WebSocket, db: AsyncSession, call_id: uuid.UUID,
                 return
             continue
 
-        # Per-tenant message budget: each message costs LLM and embedding calls, so a
-        # leaked ticket or a runaway client must not be able to run up the bill.
-        decision = await rate_check("chat_tenant", str(business_id), settings.rate_limit_messages_per_tenant_per_minute, 60)
+        # Message budgets: each message costs LLM and embedding calls, so a leaked
+        # ticket or a runaway client must not be able to run up the bill.
+        # The SESSION budget is checked first on purpose: a flooding session is
+        # rejected before it can increment the TENANT counter, so it cannot burn
+        # the business's whole allowance and lock out its other customers.
+        decision = await rate_check("chat_session", f"{business_id}:{session_id}",
+                                    settings.rate_limit_messages_per_session_per_minute, 60)
+        scope = "session"
+        if decision.allowed:
+            decision = await rate_check("chat_tenant", str(business_id),
+                                        settings.rate_limit_messages_per_tenant_per_minute, 60)
+            scope = "tenant"
         if not decision.allowed:
+            logger.warning("chat_rate_limited", scope=scope, retry_after=decision.retry_after)
             if not await _send(websocket, _error_frame("rate_limited", retry_after=decision.retry_after)):
                 return
             continue
@@ -317,15 +344,34 @@ async def _finalize_call(db: AsyncSession, call_id: uuid.UUID, outcome: str) -> 
 
 
 async def _get_or_create_call(db: AsyncSession, business_id: uuid.UUID, session_id: str) -> Call:
+    """The call row for (tenant, session), created on first connect.
+
+    A check-then-insert is a race: a chat ticket is replayable until it expires, so
+    several connections can open for one session at once, and each saw "no call
+    yet" and inserted its own. Measured: 20 simultaneous connects made 20 rows, and
+    from then on every reconnect for that session raised MultipleResultsFound.
+
+    The fix serialises creators per (tenant, session) with a transaction-scoped
+    Postgres advisory lock. It needs no schema change (a unique index would, and
+    cannot be applied to an existing database without a migration) and it is
+    released by the commit below on EVERY path -- the caller keeps this session
+    open for the whole WebSocket connection, so a lock that outlived this function
+    would block every other connect for the session until that one disconnected.
+
+    If duplicates already exist (rows created before this fix), the earliest call
+    wins instead of raising, so affected sessions heal on their next connect."""
+    await db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(f"call:{business_id}:{session_id}", 0))))
+
     result = await db.execute(
         select(Call).where(Call.business_id == business_id, Call.caller_ref == session_id)
+        .order_by(Call.started_at, Call.id).limit(1)
     )
-    existing = result.scalar_one_or_none()
+    existing = result.scalars().first()
     if existing:
         if existing.status in ("completed", "failed"):  # the customer reconnected: the call is live again
             existing.status = "active"
             existing.ended_at = None
-            await db.commit()
+        await db.commit()  # releases the advisory lock (and applies the status change, if any)
         return existing
 
     call = Call(id=uuid.uuid4(), business_id=business_id, channel="browser",
@@ -338,15 +384,22 @@ async def _get_or_create_call(db: AsyncSession, business_id: uuid.UUID, session_
 
 async def _persist_turn(db: AsyncSession, call_id: uuid.UUID, turn_index: int,
                          user_message: str, result: dict, latency_ms: int):
+    # Both rows are inserted in one flush, so a column default of utcnow() could give
+    # them the SAME timestamp on a coarse clock, and the transcript order (created_at)
+    # would then be arbitrary. Explicit, strictly increasing timestamps pin it:
+    # the customer's message always precedes the reply to it.
+    now = datetime.utcnow()
     customer_msg = Message(
         call_id=call_id, role="customer", content=user_message,
         intent=result["intent"],
         retrieved_doc_ids=[uuid.UUID(d) for d in result["retrieved_doc_ids"]] or None,
+        created_at=now,
     )
     agent_msg = Message(
         call_id=call_id, role="agent", content=result["response_text"],
         safety_flag=result["safety_flag"], latency_ms=latency_ms,
         token_count=result["token_count"],
+        created_at=now + timedelta(microseconds=1),
     )
     db.add_all([customer_msg, agent_msg])
     if result["escalate"]:

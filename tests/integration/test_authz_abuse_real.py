@@ -162,3 +162,36 @@ def test_the_per_tenant_message_budget_stops_runaway_chat_and_spares_other_tenan
         "SELECT c.business_id::text AS business_id, count(*) AS n FROM messages m JOIN calls c ON c.id = m.call_id GROUP BY 1")}
     assert per_tenant[str(a.business_id)] == 4              # two turns saved; rejected messages cost nothing
     assert per_tenant[str(b.business_id)] == 2
+
+
+def test_one_abusive_session_cannot_exhaust_the_tenants_budget_for_its_other_customers(client, monkeypatch):
+    """Before this, the only chat limit was per TENANT: a single session (or a leaked
+    ticket) could spend the whole allowance and every other customer of that business
+    got `rate_limited`. The session budget is checked first, so a flooding session
+    is stopped before it can touch the tenant budget."""
+    monkeypatch.setattr(settings, "rate_limit_messages_per_session_per_minute", 2)
+    monkeypatch.setattr(settings, "rate_limit_messages_per_tenant_per_minute", 4)
+    tenant = register_tenant(client, "Alpha")
+
+    def url():
+        issued = client.post("/api/v1/auth/chat-ticket", headers=tenant.auth).json()
+        return f"{issued['ws_path']}?token={issued['ticket']}"
+
+    def turn(ws, text="where is my order"):
+        ws.send_json({"text": text})
+        return ws.receive_json()
+
+    with client.websocket_connect(url()) as flooder:
+        assert [turn(flooder)["type"] for _ in range(2)] == ["response", "response"]
+        for _ in range(10):                                  # a flood: all stopped at the session level
+            limited = turn(flooder)
+            assert limited["type"] == "error" and limited["code"] == "rate_limited"
+            assert 1 <= limited["retry_after"] <= 60
+
+    with client.websocket_connect(url()) as other_customer:  # same business, different session
+        assert [turn(other_customer)["type"] for _ in range(2)] == ["response", "response"]
+
+    with client.websocket_connect(url()) as late_customer:   # 2 + 2 = the whole tenant budget; it still binds
+        assert turn(late_customer)["code"] == "rate_limited"
+
+    assert db_rows("SELECT count(*) AS n FROM messages")[0]["n"] == 8   # 4 saved turns; rejected messages cost nothing

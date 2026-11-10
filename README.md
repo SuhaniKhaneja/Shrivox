@@ -27,26 +27,32 @@ just in application code.
 User message (JWT identifies business_id)
    |
    v
-[detect_intent] --escalation trigger--> [generate_response: transfer message] --> END
-   |  (no trigger)
-   v
-[retrieve_context]  (pgvector, scoped to business_id, top-3, score-thresholded)
+[input_guard]  deterministic rules (English, Hinglish, Devanagari), no I/O
+   |  escalate / self-harm ----------------------------------> [escalate_response] --> END
+   |  (fan-out, runs in parallel)
+   +--> [classify_intent]   (Gemini, tiny call)
+   +--> [retrieve_context]  (pgvector, business_id in SQL, top-3; short follow-ups
+   |                         also search with the previous customer message)
+   v  (join)
+[triage]  classifier says "wants a human" --> [escalate_response] --> END
    |
    v
-[generate_response]  (Gemini 2.5 Flash, grounded in retrieved context)
-   |
-   v
-[safety_check_output] --ungrounded promise--> retry once with stricter prompt
-   |
-   v
-Response -> Redis (session memory) + Postgres (durable record) -> client
+[generate_response] --> [safety_check] --safe--> END
+                            |  unsafe (ungrounded promise, or a figure not in the KB/conversation)
+                            v
+                  [regenerate_response] (targeted instruction, ONE retry) --> [safety_check]
+                            |  still unsafe
+                            v
+                     [safe_fallback] (hand-off to a human, never the unsafe text) --> END
+
+Response -> Redis (session memory, atomic append) + Postgres (durable record) -> client
 ```
 
 Built as a **LangGraph StateGraph**, not a linear function, because the
 branches are genuinely conditional: an escalation-triggering message
 must skip retrieval and generation entirely (latency + cost), and an
-output that trips the safety check needs a retry path, not a silent
-pass-through. See `app/agents/graph.py` for the reasoning behind each
+output that trips the safety check goes through a bounded retry loop
+and is never sent if it is still unsafe. See `app/agents/graph.py` for the reasoning behind each
 node.
 
 ### Why each component exists
@@ -193,7 +199,17 @@ revoked.
 | Login | 10 / minute and 10 / 15 minutes | client IP; email |
 | Register | 5 / hour | client IP |
 | Mint chat ticket | 30 / minute | user |
-| Chat messages | 60 / minute | tenant (WebSocket `rate_limited` frame with `retry_after`) |
+| Chat messages | 20 / minute | session, checked first (WebSocket `rate_limited` frame with `retry_after`) |
+| Chat messages | 60 / minute | tenant, checked second |
+
+The session budget is checked before the tenant budget, so one flooding session is
+stopped without spending the business's allowance and locking out its other customers.
+
+**Pagination.** `GET /api/v1/conversations` and `GET /api/v1/documents` take `limit`
+(1-500, default 100) and `offset`, return newest first, and send the total in the
+`X-Total-Count` header; the body is still a plain JSON array. Messages inside one
+conversation (`GET /api/v1/conversations/{id}`) take `limit` (1-2000, default 500) and
+`offset`, and the response carries `message_count`. Out-of-range values get a 422.
 
 Keys hash the IP or email, so Redis holds no raw personal data. Set
 `REGISTRATION_ENABLED=false` to turn off self-service signup (the default is on
@@ -344,6 +360,22 @@ Hinglish + English test set. It measures:
 **Status: harness is built, not yet run against the full labeled set.**
 Running it and publishing a baseline is the next milestone before
 moving to Phase 2.
+
+## Observability
+
+`GET /metrics` exposes Prometheus metrics (HTTP by route *template*, LLM calls,
+latency, tokens, truncated answers, guardrail interventions). No customer text
+is ever a label. Logs are JSON and honour `LOG_LEVEL`. Keep `/metrics` off the
+public ingress.
+
+## Guardrail regression eval
+
+```
+python -m app.evaluation.guardrail_eval
+```
+
+Offline (no API key). The labelled cases are self-written, so the score is a
+regression signal, not a production accuracy estimate; see `docs/AUDIT.md`.
 
 ## Testing
 

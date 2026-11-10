@@ -17,6 +17,11 @@ printed. The ticket still travels in the URL query string (a WebSocket
 limitation); it expires within CHAT_TICKET_TTL_SECONDS.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run from anywhere, no PYTHONPATH needed
+
 import asyncio
 import getpass
 import json

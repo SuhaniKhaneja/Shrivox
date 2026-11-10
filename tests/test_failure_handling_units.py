@@ -10,7 +10,6 @@ call-finalization helper.
 import asyncio
 import json
 import time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -274,37 +273,27 @@ def test_frame_parser_accepts_and_strips_a_valid_message(monkeypatch):
 
 # ----------------------------------------------------------- session memory
 
-class CountingRedis:
-    def __init__(self):
-        self.store, self.sets = {}, 0
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ex=None):
-        self.sets += 1
-        self.store[key] = value
-
-
-def test_append_turns_writes_both_messages_in_a_single_redis_write():
+def test_append_turns_writes_both_messages_in_a_single_redis_transaction():
     import uuid
     from app.memory import session_memory
-    r, biz = CountingRedis(), uuid.uuid4()
+    from auth_helpers import FakeRedis
+    r, biz = FakeRedis(), uuid.uuid4()
     with patch("app.memory.session_memory.get_redis", return_value=r):
         history = run(session_memory.append_turns(biz, "s1", [("customer", "q"), ("agent", "a")]))
-    assert r.sets == 1
+    assert r.executed_pipelines == 1
     assert [t["role"] for t in history] == ["customer", "agent"]
 
 
 def test_append_turns_still_bounds_the_window(monkeypatch):
     import uuid
     from app.memory import session_memory
+    from auth_helpers import FakeRedis
     monkeypatch.setattr(settings, "max_conversation_turns", 4)
-    r, biz = CountingRedis(), uuid.uuid4()
+    r, biz = FakeRedis(), uuid.uuid4()
     with patch("app.memory.session_memory.get_redis", return_value=r):
         for i in range(5):
             run(session_memory.append_turns(biz, "s1", [("customer", f"q{i}"), ("agent", f"a{i}")]))
-    stored = json.loads(next(iter(r.store.values())))
+    stored = [json.loads(x) for x in next(iter(r.store.values()))]
     assert [t["content"] for t in stored] == ["q3", "a3", "q4", "a4"]
 
 
@@ -330,3 +319,31 @@ def test_finalize_call_never_raises_even_if_the_database_is_gone():
 def test_failure_policy_settings_are_bounded(field, bad):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, google_api_key="k", jwt_secret="s", **{field: bad})
+
+
+# ------------------------------------------------------ transcript ordering
+
+def test_a_turns_messages_get_strictly_ordered_timestamps_even_on_a_frozen_clock():
+    """Customer message and reply are flushed together; on a coarse clock a column
+    default could tie them and make the transcript order arbitrary."""
+    import uuid
+    from datetime import datetime as real_datetime
+    from app.api import conversations
+
+    class FrozenClock(real_datetime):
+        @classmethod
+        def utcnow(cls):
+            return cls(2026, 11, 7, 12, 0, 0)
+
+    db = MagicMock()
+    db.add_all = MagicMock()
+    db.execute, db.commit = AsyncMock(), AsyncMock()
+    result = {"intent": "general_query", "retrieved_doc_ids": [], "response_text": "ok",
+              "safety_flag": None, "token_count": 0, "escalate": False}
+
+    with patch.object(conversations, "datetime", FrozenClock):
+        run(conversations._persist_turn(db, uuid.uuid4(), 0, "hello", result, 5))
+
+    customer, agent = db.add_all.call_args.args[0]
+    assert (customer.role, agent.role) == ("customer", "agent")
+    assert customer.created_at < agent.created_at

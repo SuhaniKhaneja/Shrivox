@@ -11,10 +11,11 @@ tenant-scoping logic wrong, not one per route handler.
 """
 
 import uuid
+from dataclasses import dataclass
 
 import structlog
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.security import (
@@ -83,3 +84,31 @@ def require_role(*allowed: str):
 
 require_manager = require_role("admin")
 require_operator = require_role("admin", "agent")
+
+
+# -------------------------------------------------------------- pagination
+#
+# List endpoints used to load every row a tenant owned into memory and return it in
+# one response, so cost grew without bound with history. They are now paged with a
+# hard ceiling. Out-of-range values are rejected (422) rather than silently clamped,
+# so a client that asks for 10,000 rows learns it is not getting them. The response
+# body stays a plain JSON array; the total is returned in the X-Total-Count header.
+
+@dataclass(frozen=True)
+class Page:
+    limit: int
+    offset: int
+
+
+MAX_OFFSET = 10_000_000
+
+
+def pagination(default_limit: int = 100, max_limit: int = 500):
+    """A dependency factory: Depends(pagination()) for lists, or with other bounds
+    (e.g. the messages inside one conversation)."""
+    def dependency(
+        limit: int = Query(default_limit, ge=1, le=max_limit, description=f"Page size (1-{max_limit})."),
+        offset: int = Query(0, ge=0, le=MAX_OFFSET, description="Rows to skip."),
+    ) -> Page:
+        return Page(limit=limit, offset=offset)
+    return dependency

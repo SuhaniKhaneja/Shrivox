@@ -5,3 +5,8 @@ __pycache__/
 eval_report.json
 *.egg-info/
 .pytest_cache/
+.coverage
+dump.rdb
+.ruff_cache/
+.env.*
+!.env.example
