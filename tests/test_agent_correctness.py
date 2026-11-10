@@ -16,8 +16,8 @@ import pytest
 from structlog.testing import capture_logs
 
 from app.agents.graph import shrivox_agent
-from app.agents.llm_client import _to_gemini_contents, chat_completion
-from app.prompts.templates import INTENT_DETECTION_PROMPT, SYSTEM_PROMPT, build_response_prompt
+from app.agents.llm_client import _to_gemini_contents
+from app.prompts.templates import INTENT_DETECTION_PROMPT, build_response_prompt
 
 
 class FakeGemini:

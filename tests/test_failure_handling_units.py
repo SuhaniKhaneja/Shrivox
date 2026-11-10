@@ -10,7 +10,6 @@ call-finalization helper.
 import asyncio
 import json
 import time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx

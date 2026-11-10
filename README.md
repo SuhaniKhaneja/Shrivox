@@ -27,26 +27,32 @@ just in application code.
 User message (JWT identifies business_id)
    |
    v
-[detect_intent] --escalation trigger--> [generate_response: transfer message] --> END
-   |  (no trigger)
-   v
-[retrieve_context]  (pgvector, scoped to business_id, top-3, score-thresholded)
+[input_guard]  deterministic rules (English, Hinglish, Devanagari), no I/O
+   |  escalate / self-harm ----------------------------------> [escalate_response] --> END
+   |  (fan-out, runs in parallel)
+   +--> [classify_intent]   (Gemini, tiny call)
+   +--> [retrieve_context]  (pgvector, business_id in SQL, top-3; short follow-ups
+   |                         also search with the previous customer message)
+   v  (join)
+[triage]  classifier says "wants a human" --> [escalate_response] --> END
    |
    v
-[generate_response]  (Gemini 2.5 Flash, grounded in retrieved context)
-   |
-   v
-[safety_check_output] --ungrounded promise--> retry once with stricter prompt
-   |
-   v
-Response -> Redis (session memory) + Postgres (durable record) -> client
+[generate_response] --> [safety_check] --safe--> END
+                            |  unsafe (ungrounded promise, or a figure not in the KB/conversation)
+                            v
+                  [regenerate_response] (targeted instruction, ONE retry) --> [safety_check]
+                            |  still unsafe
+                            v
+                     [safe_fallback] (hand-off to a human, never the unsafe text) --> END
+
+Response -> Redis (session memory, atomic append) + Postgres (durable record) -> client
 ```
 
 Built as a **LangGraph StateGraph**, not a linear function, because the
 branches are genuinely conditional: an escalation-triggering message
 must skip retrieval and generation entirely (latency + cost), and an
-output that trips the safety check needs a retry path, not a silent
-pass-through. See `app/agents/graph.py` for the reasoning behind each
+output that trips the safety check goes through a bounded retry loop
+and is never sent if it is still unsafe. See `app/agents/graph.py` for the reasoning behind each
 node.
 
 ### Why each component exists
@@ -354,6 +360,22 @@ Hinglish + English test set. It measures:
 **Status: harness is built, not yet run against the full labeled set.**
 Running it and publishing a baseline is the next milestone before
 moving to Phase 2.
+
+## Observability
+
+`GET /metrics` exposes Prometheus metrics (HTTP by route *template*, LLM calls,
+latency, tokens, truncated answers, guardrail interventions). No customer text
+is ever a label. Logs are JSON and honour `LOG_LEVEL`. Keep `/metrics` off the
+public ingress.
+
+## Guardrail regression eval
+
+```
+python -m app.evaluation.guardrail_eval
+```
+
+Offline (no API key). The labelled cases are self-written, so the score is a
+regression signal, not a production accuracy estimate; see `docs/AUDIT.md`.
 
 ## Testing
 

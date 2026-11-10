@@ -48,7 +48,7 @@ class TestOutputGuardrails:
 # =============================================================================
 import pytest
 
-from app.agents.guardrails import check_input, check_output, unsupported_specifics
+from app.agents.guardrails import unsupported_specifics
 from app.evaluation.guardrail_eval import evaluate_input, evaluate_output, load_cases
 
 CASES = load_cases()

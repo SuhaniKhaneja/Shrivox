@@ -110,7 +110,6 @@ def test_role_permission_matrix(use_db, name, role, expected):
 
 def test_every_dashboard_endpoint_is_covered_by_the_role_matrix():
     """A new route that forgets role handling must not slip through unnoticed."""
-    covered = {(m, p.split("/")[-1] if "/api/v1/documents/" in p or "/conversations/" in p else p) for m, p, _, _ in ENDPOINTS.values()}
     declared = set()
     for route in app.routes:
         path = getattr(route, "path", "")

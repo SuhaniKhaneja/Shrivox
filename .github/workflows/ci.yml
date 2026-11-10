@@ -24,10 +24,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Lint (correctness rules only)
+        run: pip install ruff && ruff check --isolated --select E9,F app scripts tests
+
+      - name: Guardrail regression eval (offline, no API key)
+        # Prints precision/recall on the labelled set; tests/test_guardrails.py fails on any regression.
+        run: python -m app.evaluation.guardrail_eval
+
       - name: Run unit tests
         # Integration tests (tests/integration) are skipped here; they run in the
         # `integration` job below against real PostgreSQL + Redis.
-        run: python -m pytest tests/ -v
+        run: |
+          pip install coverage
+          coverage run -m pytest tests/ -v
+          coverage report --include='app/*' --fail-under=80
 
       - name: Build Docker image
         run: docker build -f docker/Dockerfile -t shrivox-ai:ci .

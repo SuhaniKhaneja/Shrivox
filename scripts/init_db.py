@@ -12,6 +12,11 @@ stabilizes and migrations become worth the ceremony.
     python scripts/init_db.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run from anywhere, no PYTHONPATH needed
+
 import asyncio
 from sqlalchemy import text
 from app.db.session import engine
