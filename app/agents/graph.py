@@ -64,7 +64,24 @@ SAFE_FALLBACK_MESSAGE = (
     "I want to be sure you get accurate information on this, so let me connect you "
     "with a human agent who can confirm the details."
 )
+# Self-harm language needs a different reply from a routine hand-off: acknowledge
+# the person first, and point to emergency help. No hotline number is hard-coded on
+# purpose -- numbers are country-specific and a wrong one is worse than none.
+CARE_MESSAGE = (
+    "I'm really sorry you're going through this. I'm connecting you with a human agent right now. "
+    "If you are in immediate danger, please contact your local emergency services."
+)
+
+# What the regenerated answer is told, by what the output check found.
 STRICT_RETRY_INSTRUCTION = "Do not make guarantees or promises. State only what the context confirms."
+RETRY_INSTRUCTIONS = {
+    "ungrounded_promise": STRICT_RETRY_INSTRUCTION,
+    "ungrounded_specifics": (
+        "Do not state any amount, price, percentage or time period unless it appears in the context "
+        "or the conversation. If the context does not say, tell the customer you will check and "
+        "offer to connect them with a human agent."
+    ),
+}
 
 
 class ConversationState(TypedDict):
@@ -120,6 +137,7 @@ async def input_guard(state: ConversationState) -> dict:
     """Deterministic input rules. No I/O, so it is free to run before anything else."""
     check = check_input(state["user_message"])
     if not check.safe:
+        logger.info("input_guard_triggered", category=check.category)  # the rule family, never the text
         return {"escalate": True, "safety_flag": check.flag, "intent": "escalation_request"}
     return {"escalate": False}
 
@@ -170,7 +188,7 @@ async def triage(state: ConversationState) -> dict:
 
 async def escalate_response(state: ConversationState) -> dict:
     return {
-        "response_text": ESCALATION_MESSAGE,
+        "response_text": CARE_MESSAGE if state.get("safety_flag") == "self_harm" else ESCALATION_MESSAGE,
         "latency_ms": 0,
         # Retrieval may have run alongside the classifier, but none of it was used.
         "retrieved_docs": [],
@@ -192,7 +210,14 @@ async def generate_response(state: ConversationState) -> dict:
 
 async def safety_check(state: ConversationState) -> dict:
     grounded = len(state["retrieved_docs"]) > 0
-    check = check_output(state["response_text"], grounded_in_kb=grounded)
+    # A figure is supported by the retrieved context, or by something the customer or
+    # the agent already said this session (an amount the customer quoted is not an invention).
+    said = [m["content"] for m in state["conversation_history"]] + [state["user_message"]]
+    check = check_output(state["response_text"], grounded_in_kb=grounded,
+                         context=state["retrieved_docs"], conversation=said)
+    if not check.safe:
+        logger.warning("output_check_failed", flag=check.flag, category=check.category,
+                       unsupported=list(check.detail))  # kinds and values only, never the answer text
     # Once the guardrail has intervened, the flag sticks even if the retry passes:
     # analytics need to see that it fired.
     return {"output_safe": check.safe, "safety_flag": check.flag or state.get("safety_flag")}
@@ -202,7 +227,8 @@ async def regenerate_response(state: ConversationState) -> dict:
     messages = build_response_prompt(
         state["retrieved_docs"], state["conversation_history"], state["user_message"]
     )
-    messages.insert(1, {"role": "system", "content": STRICT_RETRY_INSTRUCTION})
+    instruction = RETRY_INSTRUCTIONS.get(state.get("safety_flag"), STRICT_RETRY_INSTRUCTION)
+    messages.insert(1, {"role": "system", "content": instruction})
     result = await chat_completion(messages)
     return {
         "response_text": result["text"],

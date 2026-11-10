@@ -53,7 +53,7 @@ async def test_normal_flow_calls_intent_retrieval_and_generation():
     mock_gen_resp = {"text": "Your refund will process in 5-7 days.", "latency_ms": 200, "prompt_tokens": 50, "completion_tokens": 15}
 
     with patch("app.agents.graph.chat_completion", new=AsyncMock(side_effect=[mock_intent_resp, mock_gen_resp])), \
-         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[])):
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[REFUND_POLICY])):
 
         result = await shrivox_agent.ainvoke(base_state("How long for my refund?"))
 
@@ -87,6 +87,14 @@ async def test_ungrounded_promise_triggers_retry():
 # ============================================================================
 
 import asyncio
+
+
+def _doc(text, doc_id="11111111-1111-1111-1111-111111111111"):
+    """A retrieved KB passage, as retrieve() returns it."""
+    return type("RetrievedDoc", (), {"text": text, "id": doc_id})()
+
+
+REFUND_POLICY = _doc("Refunds are processed within 5-7 business days after we receive the item.")
 
 
 def _resp(text, prompt=5, completion=2):
@@ -126,7 +134,7 @@ async def test_intent_classification_and_retrieval_run_concurrently():
     async def retrieve(db, business_id, query, **kwargs):
         retrieval_started.set()
         await asyncio.wait_for(classifier_started.wait(), timeout=2)
-        return []
+        return [REFUND_POLICY]
 
     with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=retrieve):
         result = await shrivox_agent.ainvoke(base_state("How long for my refund?"))
@@ -144,7 +152,8 @@ async def test_a_classifier_verdict_of_escalation_request_escalates_and_skips_ge
 
     with patch("app.agents.graph.chat_completion", new=chat), \
          patch("app.agents.graph.retrieve", new=AsyncMock(return_value=retrieved)):
-        result = await shrivox_agent.ainvoke(base_state("mujhe kisi se baat karni hai"))
+        # Deliberately a phrasing no keyword rule matches, so this exercises the CLASSIFIER path.
+        result = await shrivox_agent.ainvoke(base_state("this bot is useless, is there anyone else who can help me"))
 
     assert chat.await_count == 1                       # the classifier only
     assert result["escalate"] is True
@@ -218,3 +227,59 @@ async def test_retrieval_gets_no_context_on_the_first_turn():
          patch("app.agents.graph.retrieve", new=retrieve):
         await shrivox_agent.ainvoke(base_state("How long for my refund?"))
     assert retrieve.await_args.kwargs["context_query"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [
+    "mujhe kisi insaan se baat karni hai",          # romanised Hinglish
+    "मुझे किसी इंसान से बात करनी है",                  # Devanagari
+    "main consumer court jaunga",
+])
+async def test_hinglish_escalation_is_caught_by_the_rules_at_zero_llm_cost(message):
+    """The input rules used to be English-only, so every one of these cost an LLM call
+    and a retrieval and then got a normal answer."""
+    chat, retrieve = AsyncMock(), AsyncMock()
+    with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=retrieve):
+        result = await shrivox_agent.ainvoke(base_state(message))
+    assert result["escalate"] is True and result["safety_flag"] == "escalation_trigger"
+    chat.assert_not_awaited()
+    retrieve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_harm_gets_a_caring_reply_not_the_routine_handoff_line():
+    chat, retrieve = AsyncMock(), AsyncMock()
+    with patch("app.agents.graph.chat_completion", new=chat), patch("app.agents.graph.retrieve", new=retrieve):
+        result = await shrivox_agent.ainvoke(base_state("I don't want to live anymore"))
+    assert result["escalate"] is True and result["safety_flag"] == "self_harm"
+    assert "sorry" in result["response_text"].lower() and "emergency" in result["response_text"].lower()
+    assert result["response_text"] != "I understand -- let me connect you with a human agent who can help with this right away."
+    chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_invented_amount_is_blocked_retried_with_a_targeted_instruction_and_then_accepted():
+    """The costliest support hallucination: a number the KB never gave. Before, only the
+    words 'guarantee'/'promise' were checked, so this shipped."""
+    chat = AsyncMock(side_effect=[
+        _resp("refund_request"),
+        _resp("You will get 5000 rupees back within 2 days."),                       # invented
+        _resp("Refunds are processed within 5-7 business days after we get the item."),  # grounded
+    ])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[REFUND_POLICY])):
+        result = await shrivox_agent.ainvoke(base_state("kitna refund milega aur kab"))
+
+    assert result["response_text"].startswith("Refunds are processed within 5-7")
+    assert result["safety_flag"] == "ungrounded_specifics" and result["escalate"] is False
+    retry_messages = chat.await_args_list[2].args[0]
+    assert any("Do not state any amount" in m["content"] for m in retry_messages if m["role"] == "system")
+
+
+@pytest.mark.asyncio
+async def test_an_amount_the_customer_quoted_is_not_treated_as_an_invention():
+    chat = AsyncMock(side_effect=[_resp("refund_request"), _resp("Aapke Rs 1,499 ka refund process ho jayega.")])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc("Refund amounts equal the price paid.")])):
+        result = await shrivox_agent.ainvoke(base_state("maine 1499 diye the, refund?"))
+    assert result["safety_flag"] is None and chat.await_count == 2    # no retry needed
