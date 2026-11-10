@@ -49,6 +49,7 @@ from langgraph.graph import END, StateGraph
 
 from app.agents.guardrails import check_input, check_output
 from app.agents.llm_client import chat_completion
+from app.core.observability import GUARD_EVENTS
 from app.core.upstream import UpstreamEmptyResponse
 from app.db.session import AsyncSessionLocal
 from app.prompts.templates import DEFAULT_INTENT, INTENT_DETECTION_PROMPT, VALID_INTENTS, build_response_prompt
@@ -137,6 +138,7 @@ async def input_guard(state: ConversationState) -> dict:
     """Deterministic input rules. No I/O, so it is free to run before anything else."""
     check = check_input(state["user_message"])
     if not check.safe:
+        GUARD_EVENTS.labels("input", check.flag).inc()
         logger.info("input_guard_triggered", category=check.category)  # the rule family, never the text
         return {"escalate": True, "safety_flag": check.flag, "intent": "escalation_request"}
     return {"escalate": False}
@@ -216,6 +218,7 @@ async def safety_check(state: ConversationState) -> dict:
     check = check_output(state["response_text"], grounded_in_kb=grounded,
                          context=state["retrieved_docs"], conversation=said)
     if not check.safe:
+        GUARD_EVENTS.labels("output", check.flag).inc()
         logger.warning("output_check_failed", flag=check.flag, category=check.category,
                        unsupported=list(check.detail))  # kinds and values only, never the answer text
     # Once the guardrail has intervened, the flag sticks even if the retry passes:
@@ -240,6 +243,7 @@ async def regenerate_response(state: ConversationState) -> dict:
 
 async def safe_fallback(state: ConversationState) -> dict:
     """The answer stayed unsafe after the bounded retry: do not send it."""
+    GUARD_EVENTS.labels("output", "blocked_after_retry").inc()
     logger.warning("output_blocked_after_retry", flag=state.get("safety_flag"),
                    attempts=state.get("safety_attempts", 0))
     return {"response_text": SAFE_FALLBACK_MESSAGE, "escalate": True}

@@ -15,14 +15,17 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.failures import CATALOGUE, RateLimitExceeded, code_for_exception
 from app.core.log_redaction import install_token_redaction
+from app.core.observability import configure_logging, metrics_middleware, metrics_response
 from app.core.upstream import UpstreamError
 from app.config import settings
 from app.db.session import engine
 from app.api import auth, documents, conversations
 
 logger = structlog.get_logger()
+configure_logging(settings.log_level)
 install_token_redaction()  # chat tickets travel in the WebSocket URL; keep them out of uvicorn logs
 app = FastAPI(title="Shrivox AI", version="0.2.0")
+app.middleware("http")(metrics_middleware)
 
 
 
@@ -65,3 +68,10 @@ async def startup():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    """Prometheus scrape endpoint. Carries no customer content (see observability.py);
+    in production keep it off the public ingress and scrape it from inside the network."""
+    return metrics_response()
