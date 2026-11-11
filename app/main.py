@@ -7,6 +7,8 @@ exists). Each router owns its own domain (auth, documents, conversations)
 so route handlers stay testable in isolation from each other.
 """
 
+import asyncio
+
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -19,6 +21,7 @@ from app.core.observability import configure_logging, metrics_middleware, metric
 from app.core.upstream import UpstreamError
 from app.config import settings
 from app.db.session import engine
+from app.db.vector_index import ensure_vector_index
 from app.api import auth, documents, conversations
 
 logger = structlog.get_logger()
@@ -57,6 +60,10 @@ async def startup():
         # Idempotent -- safe on every boot. pgvector must exist before
         # any table with a Vector column can be created or queried.
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    # HNSW + iterative scan where pgvector supports it; exact scan otherwise. Built in the BACKGROUND:
+    # on a large table the build takes minutes (~2 min for 40k chunks at 1536 dims) and must not hold
+    # up readiness. Until it finishes, searches use the always-correct exact path.
+    app.state.vector_index_task = asyncio.create_task(ensure_vector_index(engine))
     # Loud, structured warnings for settings that are fine locally but wrong in production.
     if settings.environment == "production" and settings.registration_enabled:
         logger.warning("registration_open_in_production", hint="set REGISTRATION_ENABLED=false once tenants are provisioned")

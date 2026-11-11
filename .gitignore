@@ -11,3 +11,4 @@ dump.rdb
 .env.*
 !.env.example
 rag_eval_report.json
+bench_vector.json

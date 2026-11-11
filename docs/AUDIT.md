@@ -49,3 +49,38 @@ Alembic migrations, HNSW index (matters only at KB sizes I couldn't test), promp
 hardening of retrieved documents, persisting eval runs (the `Evaluation` table requires a
 `business_id`, which the offline guardrail eval has no meaning for). Truncated answers are
 counted and logged but still delivered; the next step is to raise `max_tokens` or retry.
+
+
+## Addendum: retrieval at scale (HNSW) and realistic RAG eval
+
+Verified: pgvector 0.8.0 locally (iterative scan available); CI image is `pgvector/pgvector:pg16`
+(unpinned tag, currently >= 0.8). **Correction to an earlier claim of mine:** I said search cost grows with the
+whole platform. Measured, it grows with the *tenant's own* size: the planner already uses the btree on
+`business_id`, so small tenants were fast without any vector index. The index matters for large tenants.
+
+| tenant size (40k chunks, 75 tenants) | state | recall@3 | p50 ms | p95 ms |
+|---|---|---|---|---|
+| small (50) | no index | 1.000 | 4.09 | 4.82 |
+| small (50) | HNSW + iterative | 1.000 | 3.77 | 4.04 |
+| medium (500) | no index | 1.000 | 5.80 | 6.59 |
+| medium (500) | HNSW + iterative | 1.000 | 5.26 | 7.70 |
+| large (20,000) | no index | 1.000 | 109.84 | n=3 |
+| large (20,000) | HNSW + iterative | 1.000 | 4.55 | n=3 |
+
+Limits of this benchmark: synthetic vectors; database time only (no embedding call); the "large" row is ONE
+tenant sampled 3 times, so treat ~24x as indicative, not a distribution. Index build: 138 s for 40k chunks.
+
+Tests that prove the mechanism (each checked by mutation): without iterative scan a small tenant is starved
+(fewer than k rows) on the HNSW plan; with it the rows are complete, identical to an exact scan and tenant-scoped;
+removing the tenant filter, switching iterative scan off, awaiting the build at startup, or skipping the
+throwaway-tenant cleanup each fails a test.
+
+Realistic corpus: 52 entries / 58 chunks / 52 questions (kinds: direct, paraphrase, hinglish, typo, follow-up,
+long-doc, unanswerable). I checked every label against the corpus text by hand; two assertions in the first
+draft of the tests had never been run and were wrong (chunk count; a word-based proxy for "has a number"), so the
+corpus was extended and the second assertion made digit-based.
+
+NOT validated: retrieval quality with real Gemini embeddings on this corpus (needs your key); the threshold sweep
+result (same); behaviour of the planner on your production data distribution; the unpinned CI image version.
+At ~58 chunks the planner will choose an exact scan, so the realistic eval measures embedding/ranking quality,
+not HNSW; HNSW is covered by the integration tests and the benchmark.

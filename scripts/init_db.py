@@ -21,6 +21,7 @@ import asyncio
 from sqlalchemy import text
 from app.db.session import engine
 from app.db.models import Base
+from app.db.vector_index import ensure_vector_index
 
 
 async def main():
@@ -30,6 +31,8 @@ async def main():
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
     print("Tables created.")
+    built = await ensure_vector_index(engine)
+    print("HNSW vector index ready." if built else "No HNSW index (needs pgvector >= 0.8); searches use an exact scan.")
 
 
 if __name__ == "__main__":

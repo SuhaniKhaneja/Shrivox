@@ -76,8 +76,9 @@ CASES = [
 ]
 
 
-async def fake_retriever(question):
-    return {"q1": [("a", "A text")], "q2": [("x", "X"), ("c", "C text")], "q3": [("x", "X")]}[question]
+async def fake_retriever(question, history=()):
+    H = ev.Hit
+    return {"q1": [H("a", "A text", 0.9)], "q2": [H("x", "X", 0.8), H("c", "C text", 0.5)], "q3": [H("x", "X", 0.4)]}[question]
 
 
 @pytest.mark.asyncio
@@ -99,7 +100,7 @@ async def test_evaluate_computes_per_question_and_aggregate_metrics():
 
 @pytest.mark.asyncio
 async def test_a_failing_case_is_recorded_and_does_not_abort_or_skew_the_run():
-    async def flaky(question):
+    async def flaky(question, history=()):
         if question == "q1":
             raise RuntimeError("secret customer text must not be copied here")
         return await fake_retriever(question)
@@ -129,16 +130,22 @@ async def test_retrieval_only_never_calls_the_llm():
 @pytest.mark.asyncio
 async def test_db_retriever_scopes_by_business_and_maps_chunks_back_to_kb_ids():
     business = uuid.uuid4()
-    docs = [SimpleNamespace(text="Refund  policy\n text"), SimpleNamespace(text="not in kb file")]
+    docs = [SimpleNamespace(text="Refund  policy\n text", score=0.9, metadata={}),
+            SimpleNamespace(text="not in kb file", score=0.4, metadata={}),
+            SimpleNamespace(text="chunk of a seeded entry", score=0.3, metadata={"entry_id": "seeded-7"})]
     fake_retrieve = AsyncMock(return_value=docs)
     session = AsyncMock()
     with patch.object(ev, "retrieve", new=fake_retrieve), \
          patch("app.db.session.AsyncSessionLocal", return_value=session):
         session.__aenter__.return_value = session
-        hits = await ev.make_db_retriever(business, 3, 0.0, {"Refund policy text": "refund-01"})("how long?")
+        hits = await ev.make_db_retriever(business, 3, 0.0, {"Refund policy text": "refund-01"})(
+            "aur kitne din?", [{"role": "customer", "content": "mera refund kab milega"}])
     assert fake_retrieve.await_args.args[1] == business                         # tenant filter is always passed
-    assert fake_retrieve.await_args.kwargs == {"top_k": 3, "score_threshold": 0.0}
-    assert hits == [("refund-01", "Refund  policy\n text"), ("", "not in kb file")]
+    kwargs = fake_retrieve.await_args.kwargs
+    assert kwargs["top_k"] == 3 and kwargs["score_threshold"] == 0.0
+    assert "mera refund kab milega" in kwargs["context_query"]                  # follow-ups use the live agent's logic
+    assert hits == [ev.Hit("refund-01", "Refund  policy\n text", 0.9), ev.Hit("", "not in kb file", 0.4),
+                    ev.Hit("seeded-7", "chunk of a seeded entry", 0.3)]
 
 
 def test_report_is_written_as_json(tmp_path):
@@ -183,3 +190,84 @@ def test_kb_entries_are_single_chunks_so_text_mapping_is_valid():
 def test_the_cli_rejects_a_nonpositive_k():
     with pytest.raises(SystemExit):
         ev.main(["--k", "0"])
+
+
+# ------------------------------------------------------------------ threshold sweep, kinds, latency
+
+def _row(id_, relevant, ids, scores, kind="direct"):
+    return {"id": id_, "kind": kind, "error": None, "relevant_ids": relevant,
+            "retrieved_ids": ids, "retrieved_scores": scores}
+
+
+SWEEP_ROWS = [
+    _row("a", ["x"], ["x", "y"], [0.80, 0.30]),            # relevant chunk scores high
+    _row("b", ["x"], ["z", "x"], [0.45, 0.35]),            # relevant chunk ranks 2nd and scores low
+    _row("c", [], ["y"], [0.55], kind="unanswerable"),     # not covered, but a chunk scores 0.55
+    _row("d", [], ["y"], [0.20], kind="unanswerable"),
+]
+
+
+def test_sweep_trades_missing_context_against_leaked_irrelevant_context():
+    by_t = {r["threshold"]: r for r in ev.threshold_sweep(SWEEP_ROWS, 3, (0.0, 0.4, 0.6))}
+    assert by_t[0.0]["hit_rate@3"] == 1.0 and by_t[0.0]["no_context_rate"] == 0.0
+    assert by_t[0.0]["irrelevant_context_rate"] == 1.0                         # both uncovered questions get context
+    assert by_t[0.4]["hit_rate@3"] == 0.5 and by_t[0.4]["irrelevant_context_rate"] == 0.5
+    assert by_t[0.4]["mrr"] == pytest.approx(0.5)                              # "b": only "z" survives -> 0; "a" -> 1.0
+    assert by_t[0.6]["no_context_rate"] == 0.5 and by_t[0.6]["irrelevant_context_rate"] == 0.0
+    assert by_t[0.6]["recall@3"] == 0.5
+
+
+def test_sweep_skips_errored_cases_and_handles_a_set_without_unanswerable_questions():
+    rows = [*SWEEP_ROWS[:2], {"id": "e", "kind": "direct", "error": "RuntimeError", "relevant_ids": ["x"]}]
+    out = ev.threshold_sweep(rows, 3, (0.0,))[0]
+    assert out["irrelevant_context_rate"] is None and out["hit_rate@3"] == 1.0
+
+
+def test_by_kind_breaks_retrieval_down_per_question_type():
+    rows = [{**r, "retrieval": ev.retrieval_metrics(r["retrieved_ids"], set(r["relevant_ids"]), 3)}
+            for r in SWEEP_ROWS if r["relevant_ids"]]
+    assert ev.by_kind(rows, 3) == {"direct": {"n": 2, "recall@3": 1.0, "mrr": 0.75}}
+
+
+@pytest.mark.asyncio
+async def test_retrieval_latency_and_history_are_recorded_and_passed_through():
+    seen = []
+
+    async def retriever(question, history):
+        seen.append(history)
+        return [ev.Hit("a", "A text", 0.9)]
+    case = {"id": "f", "kind": "follow-up", "question": "aur?", "expected_answer": "e", "relevant_ids": ["a"],
+            "history": [{"role": "customer", "content": "refund?"}]}
+    out = await ev.evaluate([case], retriever, 3)
+    assert seen == [case["history"]] and out["cases"][0]["kind"] == "follow-up"
+    assert out["summary"]["retrieval_ms_p50"] is not None and out["summary"]["retrieval_ms_p95"] is not None
+    assert out["cases"][0]["retrieved_scores"] == [0.9]
+
+
+# ------------------------------------------------------------------ realistic corpus integrity
+
+def test_the_hard_dataset_only_references_corpus_entries_and_covers_every_question_kind():
+    corpus = ev.load_corpus()
+    ids = [e["id"] for e in corpus["entries"]]
+    assert len(set(ids)) == len(ids) and len(ids) >= 45
+    cases = ev.load_dataset(ev.HARD_DATASET_PATH)
+    assert len({c["id"] for c in cases}) == len(cases) and len(cases) >= 40
+    for c in cases:
+        assert set(c["relevant_ids"]) <= set(ids), c["id"]
+        assert c["question"].strip() and c["expected_answer"].strip()
+    kinds = {c["kind"] for c in cases}
+    assert {"direct", "paraphrase", "hinglish", "typo", "follow-up", "long-doc", "unanswerable"} <= kinds
+    assert sum(c["kind"] == "unanswerable" for c in cases) >= 5
+    assert all(c["history"] for c in cases if c["kind"] == "follow-up")          # follow-ups carry their prior turn
+    assert all(not c["relevant_ids"] for c in cases if c["kind"] == "unanswerable")
+
+
+def test_the_corpus_is_hard_enough_to_mean_something():
+    corpus = ev.load_corpus()
+    from app.retrieval.chunking import chunk_text
+    size = corpus["chunking"]
+    chunks = [c for e in corpus["entries"] for c in chunk_text(e["text"], size["target_words"], size["overlap_words"])]
+    assert len(chunks) >= 55                                                      # ~19x the demo KB; top-3 is no longer a coin flip
+    long_docs = [e for e in corpus["entries"] if e["id"].startswith("long-")]
+    assert all(len(chunk_text(e["text"], size["target_words"], size["overlap_words"])) >= 3 for e in long_docs)
+    assert sum(any(ch.isdigit() for ch in e["text"]) for e in corpus["entries"]) >= 40   # numeric facts that distractors must get right
