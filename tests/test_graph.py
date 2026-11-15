@@ -321,3 +321,57 @@ async def test_a_refusal_that_persists_after_the_retry_hands_off_to_a_human():
          patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc("COD is available up to Rs 5,000.")])):
         result = await shrivox_agent.ainvoke(base_state("Can I pay with Bitcoin?"))
     assert result["escalate"] is True and "Bitcoin" not in result["response_text"]
+
+
+SHIP_RULE = ("Standard delivery takes 4-7 business days to metro cities (Delhi, Mumbai, Bengaluru, Chennai, Kolkata, "
+             "Hyderabad) and 7-10 business days to all other locations.")
+
+
+@pytest.mark.asyncio
+async def test_a_listed_group_figure_given_for_an_unlisted_city_is_retried_with_the_scope_spelled_out():
+    """(report h-53) Retrieval was right and every figure was in the context -- the answer was still wrong."""
+    chat = AsyncMock(side_effect=[
+        _resp("general_query"),
+        _resp("Yes, standard delivery to Pune takes 4-7 business days, so 5 days is possible."),
+        _resp("Pune is not one of the listed metro cities, so standard delivery takes 7-10 business days."),
+    ])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc(SHIP_RULE)])):
+        result = await shrivox_agent.ainvoke(base_state("Will my order reach Pune in 5 days?"))
+    assert result["safety_flag"] == "scope_violation" and result["escalate"] is False
+    assert "7-10 business days" in result["response_text"]
+    first_prompt = chat.await_args_list[1].args[0]
+    assert any("applies ONLY to" in m["content"] for m in first_prompt if m["role"] == "system")  # told up front
+    retry = chat.await_args_list[2].args[0]
+    assert any("all other cases" in m["content"] for m in retry if m["role"] == "system")
+
+
+@pytest.mark.asyncio
+async def test_a_scope_violation_that_persists_is_never_sent_and_goes_to_a_human():
+    wrong = "Standard delivery to Pune takes 4-7 business days."
+    chat = AsyncMock(side_effect=[_resp("general_query"), _resp(wrong), _resp(wrong)])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc(SHIP_RULE)])):
+        result = await shrivox_agent.ainvoke(base_state("Will my order reach Pune in 5 days?"))
+    assert result["escalate"] is True and "4-7" not in result["response_text"]
+
+
+@pytest.mark.asyncio
+async def test_a_listed_city_gets_the_listed_figure_without_a_retry():
+    chat = AsyncMock(side_effect=[_resp("general_query"), _resp("Delivery to Mumbai takes 4-7 business days.")])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc(SHIP_RULE)])):
+        result = await shrivox_agent.ainvoke(base_state("Delivery to Mumbai kitne din mein hoga?"))
+    assert result["safety_flag"] is None and chat.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_city_the_agent_itself_mentioned_earlier_does_not_count_as_the_customers():
+    history = [{"role": "assistant", "content": "Mumbai gets the fastest delivery."}]
+    chat = AsyncMock(side_effect=[_resp("general_query"), _resp("It takes 4-7 business days."),
+                                  _resp("Other locations take 7-10 business days.")])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc(SHIP_RULE)])):
+        state = base_state("And to my town, how long?") | {"conversation_history": history}
+        result = await shrivox_agent.ainvoke(state)
+    assert result["safety_flag"] == "scope_violation"

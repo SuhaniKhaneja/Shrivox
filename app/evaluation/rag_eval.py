@@ -44,6 +44,7 @@ from app.agents.guardrails import check_output
 from app.agents.llm_client import chat_completion
 from app.core.upstream import UpstreamError
 from app.evaluation.language import detect_language
+from app.agents.scope import check_scope, scope_notes
 from app.prompts.templates import build_response_prompt
 from app.retrieval.chunking import chunk_text
 from app.retrieval.retriever import contextual_query, embed_texts, retrieve
@@ -144,11 +145,17 @@ async def judge_answer(question: str, reference: str, context: list[str], answer
     return parse_judgement(result["text"])
 
 
+def _customer_turns(question: str, history: list[dict]) -> list[str]:
+    return [m.get("content", "") for m in history if m.get("role") == "user"] + [question]
+
+
 async def generate_answer(question: str, context: list[str], history: list[dict] | None = None) -> str:
     """The product's own generation step (same prompt builder, same client, same conversation history), without
     the guardrail/regeneration loop, so the judge sees the model's raw grounded answer. History matters for
     follow-ups: "aur kitne din lagenge?" is unanswerable without the previous turn."""
-    result = await chat_completion(build_response_prompt(context, list(history or []), question))
+    history = list(history or [])
+    notes = scope_notes(context, _customer_turns(question, history))   # same notes the product prompt carries
+    result = await chat_completion(build_response_prompt(context, history, question, notes=notes))
     return result["text"]
 
 
@@ -229,6 +236,8 @@ def _answer_checks(question: str, answer: str, context: list[str], history: list
     q_lang, a_lang = detect_language(question), detect_language(answer)
     said = [question, *[m.get("content", "") for m in history]]
     guard = check_output(answer, grounded_in_kb=bool(context), context=context, conversation=said)
+    if guard.safe:   # same order as the runtime: a figure can be in the context and still not apply (h-53)
+        guard = check_scope(answer, context, _customer_turns(question, history)) or guard
     return {"question_language": q_lang, "answer_language": a_lang, "language_match": q_lang == a_lang,
             "guard_flag": guard.flag}      # what the runtime output guard would do with this answer
 
