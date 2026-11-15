@@ -34,12 +34,16 @@ import json
 import re
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, NamedTuple
 
 import structlog
 
+from app.agents.guardrails import check_output
 from app.agents.llm_client import chat_completion
+from app.core.upstream import UpstreamError
+from app.evaluation.language import detect_language
 from app.prompts.templates import build_response_prompt
 from app.retrieval.chunking import chunk_text
 from app.retrieval.retriever import contextual_query, embed_texts, retrieve
@@ -97,7 +101,12 @@ Score each from 1 (worst) to 5 (best):
 - relevance: does the answer address the question and agree with the reference answer (or, when the
   reference says the topic is not covered, does it decline/offer a human rather than invent details)?
 - faithfulness: is EVERY factual claim (amounts, durations, conditions) supported by <context>?
-  Any claim not in the context lowers the score; invented numbers score 1-2.
+  Any claim not in the context lowers the score; invented numbers score 1-2. Also score 1-2 when the answer:
+  (a) says the company does NOT offer/accept/support/ship something that <context> never mentions
+      (not being mentioned is not the same as not being offered), or
+  (b) assumes a category the context does not state or that contradicts it (e.g. calls a city a "metro"
+      when <context> lists the metro cities and that city is not among them).
+  Do not score the language the answer is written in; that is checked separately.
 
 Reply with only JSON: {{"relevance": <1-5>, "faithfulness": <1-5>, "reason": "<one short sentence>"}}"""
 
@@ -135,10 +144,11 @@ async def judge_answer(question: str, reference: str, context: list[str], answer
     return parse_judgement(result["text"])
 
 
-async def generate_answer(question: str, context: list[str]) -> str:
-    """The product's own generation step (same prompt builder, same client), without the
-    guardrail/regeneration loop, so the judge sees the model's raw grounded answer."""
-    result = await chat_completion(build_response_prompt(context, [], question))
+async def generate_answer(question: str, context: list[str], history: list[dict] | None = None) -> str:
+    """The product's own generation step (same prompt builder, same client, same conversation history), without
+    the guardrail/regeneration loop, so the judge sees the model's raw grounded answer. History matters for
+    follow-ups: "aur kitne din lagenge?" is unanswerable without the previous turn."""
+    result = await chat_completion(build_response_prompt(context, list(history or []), question))
     return result["text"]
 
 
@@ -151,20 +161,41 @@ class Hit(NamedTuple):
 
 
 Retriever = Callable[[str, list[dict]], Awaitable[list[Hit]]]   # (question, prior turns) -> hits, best first
-Answerer = Callable[[str, list[str]], Awaitable[str]]
+Answerer = Callable[[str, list[str], list[dict]], Awaitable[str]]
 Judge = Callable[[str, str, list[str], str], Awaitable[dict]]
 
 
+async def _sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
+async def _llm_stage(fn, args: tuple, row: dict, stage: str, retries: int, pause: float):
+    """Run one LLM call of a case. A transient upstream failure (already retried inside the client) is tried
+    again up to `retries` more times, waiting at least `pause` and at least what the server asked
+    (`retry_after`) -- a rate-limited run should slow down, not turn quota errors into missing scores.
+    Non-retryable errors (rejected requests) are raised at once."""
+    for attempt in range(retries + 1):
+        try:
+            return await fn(*args)
+        except UpstreamError as exc:
+            if attempt >= retries or not getattr(exc, "retryable", False):
+                row["error_stage"] = stage
+                raise
+            row["llm_retries"] = row.get("llm_retries", 0) + 1
+            await _sleep(max(pause, getattr(exc, "retry_after", None) or 0.0))
+
+
 async def evaluate(cases: list[dict], retrieve_fn: Retriever, k: int, answer_fn: Answerer | None = None,
-                   judge_fn: Judge | None = None) -> dict:
+                   judge_fn: Judge | None = None, llm_retries: int = 2, pause: float = 0.0) -> dict:
     """Run every case; one case failing never aborts the run, it is recorded with its error."""
     results = []
     for case in cases:
         row: dict = {"id": case["id"], "kind": case.get("kind", "unlabelled"), "question": case["question"],
                      "expected_answer": case["expected_answer"], "relevant_ids": case["relevant_ids"], "error": None}
+        history = case.get("history", [])
         try:
             started = time.perf_counter()
-            hits = await retrieve_fn(case["question"], case.get("history", []))
+            hits = await retrieve_fn(case["question"], history)
             row["retrieval_ms"] = round((time.perf_counter() - started) * 1000, 1)  # includes the query embedding call
             row["retrieved_ids"] = [h.entry_id for h in hits]
             row["retrieved_scores"] = [round(h.score, 4) for h in hits]
@@ -172,14 +203,34 @@ async def evaluate(cases: list[dict], retrieve_fn: Retriever, k: int, answer_fn:
             relevant = set(case["relevant_ids"])
             row["retrieval"] = retrieval_metrics(row["retrieved_ids"], relevant, k) if relevant else None
             if answer_fn:
-                row["answer"] = await answer_fn(case["question"], context)
+                row["answer"] = await _llm_stage(answer_fn, (case["question"], context, history), row, "answer",
+                                                 llm_retries, pause)
+                row.update(_answer_checks(case["question"], row["answer"], context, history))
                 if judge_fn:
-                    row["judgement"] = await judge_fn(case["question"], case["expected_answer"], context, row["answer"])
-        except Exception as exc:  # noqa: BLE001 -- recorded per case; the type only, never a message that may carry content
+                    row["judgement"] = await _llm_stage(
+                        judge_fn, (case["question"], case["expected_answer"], context, row["answer"]),
+                        row, "judge", llm_retries, pause)
+        except Exception as exc:  # noqa: BLE001 -- recorded per case; types/codes only, never a message that may carry content
             row["error"] = type(exc).__name__
-            logger.warning("rag_eval_case_failed", case=case["id"], error_type=type(exc).__name__)
+            row["error_reason"] = getattr(exc, "reason", None)          # e.g. "http_429", "timeout"
+            row["error_status"] = getattr(exc, "status_code", None)
+            row["error_retry_after"] = getattr(exc, "retry_after", None)
+            row.setdefault("error_stage", "retrieval" if "retrieved_ids" not in row else "unknown")
+            logger.warning("rag_eval_case_failed", case=case["id"], error_type=type(exc).__name__,
+                           reason=row["error_reason"], stage=row["error_stage"])
         results.append(row)
+        if pause and answer_fn:
+            await _sleep(pause)                                          # pace the run to stay under rate limits
     return {"cases": results, "summary": summarise(results, k)}
+
+
+def _answer_checks(question: str, answer: str, context: list[str], history: list[dict]) -> dict:
+    """Deterministic checks on the raw answer, independent of the LLM judge."""
+    q_lang, a_lang = detect_language(question), detect_language(answer)
+    said = [question, *[m.get("content", "") for m in history]]
+    guard = check_output(answer, grounded_in_kb=bool(context), context=context, conversation=said)
+    return {"question_language": q_lang, "answer_language": a_lang, "language_match": q_lang == a_lang,
+            "guard_flag": guard.flag}      # what the runtime output guard would do with this answer
 
 
 def _mean(values: list[float]) -> float | None:
@@ -236,6 +287,7 @@ def by_kind(results: list[dict], k: int) -> dict:
 def summarise(results: list[dict], k: int) -> dict:
     retr = [r["retrieval"] for r in results if r.get("retrieval")]
     judged = [r["judgement"] for r in results if r.get("judgement")]
+    checked = [r for r in results if "language_match" in r]
     latencies = [r["retrieval_ms"] for r in results if "retrieval_ms" in r]
     return {
         "retrieval_ms_p50": _percentile(latencies, 0.5),     # includes the query-embedding API call
@@ -249,6 +301,17 @@ def summarise(results: list[dict], k: int) -> dict:
         "judged_cases": len(judged),
         "relevance_mean": _mean([j["relevance"] for j in judged]),       # 1-5
         "faithfulness_mean": _mean([j["faithfulness"] for j in judged]),  # 1-5
+        # Deterministic checks on the raw answers (see _answer_checks); None when answers were not generated.
+        "answers_checked": len(checked),
+        "language_match_rate": _mean([1.0 if r["language_match"] else 0.0 for r in checked]),
+        "english_question_got_non_english": sum(1 for r in checked if r["question_language"] == "english"
+                                               and r["answer_language"] != "english"),
+        "english_questions": sum(1 for r in checked if r["question_language"] == "english"),
+        "guard_flag_rate": _mean([1.0 if r["guard_flag"] else 0.0 for r in checked]),
+        "guard_flags": dict(Counter(r["guard_flag"] for r in checked if r["guard_flag"])),
+        "error_reasons": dict(Counter(f'{r.get("error_stage", "?")}:{r.get("error_reason") or r["error"]}'
+                                      for r in results if r["error"])),
+        "llm_retries_used": sum(r.get("llm_retries", 0) for r in results),
         "by_kind": by_kind(results, k),
     }
 
@@ -330,7 +393,7 @@ def write_report(report: dict, path: Path) -> None:
 
 
 async def run(k: int, threshold: float, output: Path, retrieval_only: bool, limit: int | None,
-              corpus: str = "demo") -> dict:
+              corpus: str = "demo", llm_retries: int = 2, pause: float = 0.0) -> dict:
     from app.config import settings
     from app.db import vector_index
     from app.db.session import engine
@@ -353,7 +416,7 @@ async def run(k: int, threshold: float, output: Path, retrieval_only: bool, limi
         retriever = make_db_retriever(business_id, k, threshold, text_map)
         outcome = await evaluate(cases, retriever, k,
                                  None if retrieval_only else generate_answer,
-                                 None if retrieval_only else judge_answer)
+                                 None if retrieval_only else judge_answer, llm_retries, pause)
     finally:
         if cleanup:
             await delete_tenant(cleanup)       # even when a question or the run fails
@@ -361,7 +424,8 @@ async def run(k: int, threshold: float, output: Path, retrieval_only: bool, limi
     report = {
         "meta": {"run_at": datetime.now(timezone.utc).isoformat(), "k": k, "score_threshold": threshold,
                  "reasoning_model": settings.reasoning_model, "embedding_model": settings.embedding_model,
-                 "retrieval_only": retrieval_only, **meta_extra},
+                 "retrieval_only": retrieval_only, "llm_retries": llm_retries, "pause_seconds": pause,
+                 **meta_extra},
         **outcome, "threshold_sweep": sweep,
     }
     write_report(report, output)
@@ -398,10 +462,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output", type=Path, default=Path(DEFAULT_REPORT))
     parser.add_argument("--retrieval-only", action="store_true", help="skip answer generation and judging")
     parser.add_argument("--limit", type=int, default=None, help="only the first N questions")
+    parser.add_argument("--llm-retries", type=int, default=2,
+                        help="extra attempts per LLM call after the client's own retries (waits as long as the server asks)")
+    parser.add_argument("--pause", type=float, default=0.0,
+                        help="seconds to wait between questions, to stay under rate limits (try 2-4 on a free tier)")
     args = parser.parse_args(argv)
     if args.k < 1:
         parser.error("--k must be >= 1")
-    report = asyncio.run(run(args.k, args.threshold, args.output, args.retrieval_only, args.limit, args.corpus))
+    if args.llm_retries < 0 or args.pause < 0:
+        parser.error("--llm-retries and --pause must be >= 0")
+    report = asyncio.run(run(args.k, args.threshold, args.output, args.retrieval_only, args.limit, args.corpus,
+                            args.llm_retries, args.pause))
     print_summary(report, args.output)
 
 

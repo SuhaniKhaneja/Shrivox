@@ -95,7 +95,7 @@ async def test_evaluate_computes_per_question_and_aggregate_metrics():
     assert s["mrr"] == pytest.approx((1.0 + 0.5) / 2)
     assert s["relevance_mean"] == pytest.approx(13 / 3) and s["faithfulness_mean"] == pytest.approx(11 / 3)
     assert out["cases"][2]["retrieval"] is None and out["cases"][2]["judgement"]["faithfulness"] == 5.0
-    answer.assert_any_await("q2", ["X", "C text"])            # the answer sees exactly what was retrieved
+    answer.assert_any_await("q2", ["X", "C text"], [])        # the answer sees exactly what was retrieved (and the history)
 
 
 @pytest.mark.asyncio
@@ -271,3 +271,153 @@ def test_the_corpus_is_hard_enough_to_mean_something():
     long_docs = [e for e in corpus["entries"] if e["id"].startswith("long-")]
     assert all(len(chunk_text(e["text"], size["target_words"], size["overlap_words"])) >= 3 for e in long_docs)
     assert sum(any(ch.isdigit() for ch in e["text"]) for e in corpus["entries"]) >= 40   # numeric facts that distractors must get right
+
+
+# ------------------------------------------------------------------ answer-side checks and failure handling
+
+from app.core.upstream import UpstreamRejected, UpstreamUnavailable  # noqa: E402
+
+
+@pytest.fixture
+def eval_sleeps(monkeypatch):
+    recorded = []
+
+    async def fake_sleep(seconds):
+        recorded.append(seconds)
+
+    monkeypatch.setattr(ev, "_sleep", fake_sleep)
+    return recorded
+
+
+async def _hits(question, history):
+    return [ev.Hit("ship-standard", "Metro cities (Delhi, Mumbai) take 4-7 days. Other cities take 7-10 days.", 0.7)]
+
+
+ONE = [{"id": "a1", "kind": "category", "question": "When will my order reach Jaipur?",
+        "expected_answer": "7-10 business days", "relevant_ids": ["ship-standard"]}]
+
+
+@pytest.mark.asyncio
+async def test_language_drift_and_guard_flags_are_recorded_per_answer_and_summarised():
+    cases = [
+        {"id": "e1", "kind": "direct", "question": "Can I pay with Bitcoin?", "expected_answer": "not covered", "relevant_ids": []},
+        {"id": "e2", "kind": "direct", "question": "How long is the warranty on a laptop?", "expected_answer": "1 year",
+         "relevant_ids": []},
+        {"id": "h1", "kind": "hinglish", "question": "Metro mein delivery kitne din mein hogi?", "expected_answer": "4-7 days",
+         "relevant_ids": []},
+    ]
+    answers = {"Can I pay with Bitcoin?": "Sorry, we don't accept Bitcoin as a payment method.",
+               "How long is the warranty on a laptop?": "Laptop ki warranty ke liye aapko bill dikhana hoga.",
+               "Metro mein delivery kitne din mein hogi?": "Metro cities mein delivery 4-7 din mein ho jayegi."}
+
+    async def answer(question, context, history):
+        return answers[question]
+
+    out = await ev.evaluate(cases, _hits, 3, answer)
+    rows = {r["id"]: r for r in out["cases"]}
+    assert rows["e1"]["language_match"] is True and rows["e1"]["guard_flag"] == "unsupported_negative"
+    assert rows["e2"]["language_match"] is False and rows["e2"]["answer_language"] == "hinglish"
+    assert rows["h1"]["language_match"] is True and rows["h1"]["guard_flag"] is None
+    s = out["summary"]
+    assert s["answers_checked"] == 3 and s["language_match_rate"] == pytest.approx(2 / 3)
+    assert s["english_questions"] == 2 and s["english_question_got_non_english"] == 1
+    assert s["guard_flags"] == {"unsupported_negative": 1} and s["guard_flag_rate"] == pytest.approx(1 / 3)
+
+
+@pytest.mark.asyncio
+async def test_follow_up_answers_get_the_conversation_history():
+    history = [{"role": "customer", "content": "Mera COD order ka refund chahiye"}]
+    seen = {}
+
+    async def answer(question, context, hist):
+        seen["history"] = hist
+        return "ok"
+
+    await ev.evaluate([{**ONE[0], "history": history}], _hits, 3, answer)
+    assert seen["history"] == history
+
+
+@pytest.mark.asyncio
+async def test_a_transient_llm_failure_is_retried_and_the_run_records_how_often(eval_sleeps):
+    calls = []
+
+    async def answer(question, context, history):
+        calls.append(1)
+        if len(calls) < 3:
+            raise UpstreamUnavailable("llm", "http_429", 429, retry_after=7.0)
+        return "Delivery takes 7-10 business days."
+
+    out = await ev.evaluate(ONE, _hits, 3, answer, llm_retries=2, pause=1.0)
+    row = out["cases"][0]
+    assert row["error"] is None and row["llm_retries"] == 2 and out["summary"]["llm_retries_used"] == 2
+    assert eval_sleeps[:2] == [7.0, 7.0]          # waited the SERVER's 7s, not just the 1s pause
+
+
+@pytest.mark.asyncio
+async def test_retries_are_bounded_and_the_failure_says_where_and_why_without_content(eval_sleeps):
+    async def answer(question, context, history):
+        raise UpstreamUnavailable("llm", "http_429", 429, retry_after=2.0)
+
+    out = await ev.evaluate(ONE, _hits, 3, answer, llm_retries=1)
+    row = out["cases"][0]
+    assert (row["error"], row["error_reason"], row["error_status"], row["error_stage"]) == (
+        "UpstreamUnavailable", "http_429", 429, "answer")
+    assert row["error_retry_after"] == 2.0 and "answer" not in row
+    assert out["summary"]["error_reasons"] == {"answer:http_429": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_request_is_not_retried(eval_sleeps):
+    calls = []
+
+    async def answer(question, context, history):
+        calls.append(1)
+        raise UpstreamRejected("llm", "http_400", 400)
+
+    out = await ev.evaluate(ONE, _hits, 3, answer, llm_retries=3)
+    assert len(calls) == 1 and out["cases"][0]["error_reason"] == "http_400" and eval_sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_a_judge_failure_keeps_the_generated_answer_and_names_the_stage(eval_sleeps):
+    async def answer(question, context, history):
+        return "Delivery takes 7-10 business days."
+
+    async def judge(*args):
+        raise UpstreamUnavailable("llm", "timeout")
+
+    out = await ev.evaluate(ONE, _hits, 3, answer, judge, llm_retries=0)
+    row = out["cases"][0]
+    assert row["answer"].startswith("Delivery") and row["error_stage"] == "judge" and "judgement" not in row
+
+
+@pytest.mark.asyncio
+async def test_the_run_is_paced_between_questions_only_when_asked(eval_sleeps):
+    async def answer(question, context, history):
+        return "ok"
+
+    await ev.evaluate(ONE * 3, _hits, 3, answer, pause=2.5)
+    assert eval_sleeps == [2.5, 2.5, 2.5]
+    eval_sleeps.clear()
+    await ev.evaluate(ONE * 3, _hits, 3, answer)
+    assert eval_sleeps == []
+
+
+def test_the_judge_prompt_penalises_unsupported_refusals_and_assumed_categories_but_not_language():
+    assert "does NOT offer/accept/support/ship" in ev.JUDGE_PROMPT
+    assert "assumes a category" in ev.JUDGE_PROMPT and "metro" in ev.JUDGE_PROMPT
+    assert "Do not score the language" in ev.JUDGE_PROMPT
+
+
+def test_the_cli_exposes_pacing_and_rejects_negative_values():
+    with pytest.raises(SystemExit):
+        ev.main(["--pause", "-1"])
+    with pytest.raises(SystemExit):
+        ev.main(["--llm-retries", "-1"])
+
+
+def test_the_hard_dataset_covers_the_answer_side_failure_modes():
+    kinds = {c["kind"] for c in ev.load_dataset(ev.HARD_DATASET_PATH)}
+    assert {"category", "unanswerable", "follow-up", "hinglish", "typo"} <= kinds
+    unanswerable = [c for c in ev.load_dataset(ev.HARD_DATASET_PATH) if c["kind"] == "unanswerable"]
+    assert len(unanswerable) >= 9                  # denial-prone ("do you accept/provide/deliver ...") included

@@ -222,6 +222,70 @@ def _format(kind: str, value: float) -> str:
     return f"{kind}:{value:g}"
 
 
+# ------------------------------------------------- unsupported negative claims
+#
+# "We don't accept Bitcoin" / "gift wrapping is not available" when the retrieved context never
+# mentions it. Not being in the knowledge base means "I don't know", NOT "we don't offer it" -- the
+# customer acts on a made-up refusal exactly as they would on a made-up promise. Deterministic and
+# deliberately CONSERVATIVE: a denial is flagged only when the thing being denied is absent from the
+# context, so a denial the context supports ("express delivery is not available" for hill pincodes)
+# and an honest "I don't have that information" both pass. Covers the shapes seen in real model
+# output (English and romanised Hinglish); it is not a general claim detector.
+
+_SENTENCE_SPLIT = re.compile(r"[.!?\n;]+")
+_DENIAL_VERB = r"(?:accept|offer|provide|support|ship|sell|deliver|allow|carry|stock|process|have)"
+_EN_ACTIVE = re.compile(
+    r"\b(?:we|shrivox|our (?:store|company|team))\s+"
+    r"(?:(?:do|does)\s*n[o']?t|don't|doesn't|cannot|can't|can not|never|no longer|currently (?:do not|don't|cannot|can't))\s+"
+    rf"(?:currently\s+)?{_DENIAL_VERB}\s+(?P<obj>[^,]{{1,60}})")
+_EN_PASSIVE = re.compile(
+    r"(?P<obj>[^,]{2,60}?)\s+(?:is|are)\s+(?:currently\s+)?not\s+(?:available|offered|supported|accepted)\b")
+_HI_PASSIVE = re.compile(
+    r"(?P<obj>[^,]{3,60}?)\s+(?:ki\s+)?(?:(?:facility|service|suvidha|option)\s+)?(?:filhal\s+|abhi\s+)?"
+    r"(?:(?:hamare|humare)\s+paas\s+)?(?:available|uplabdh)\s+nahi(?:n)?\b")
+_HI_ACTIVE = re.compile(
+    rf"\b(?:hum|ham)\s+(?P<obj>[^,]{{2,40}}?)\s+(?:{_DENIAL_VERB}\s+)?nahi\s+(?:karte|dete|bhejte|lete)\b")
+_HI_ACTIVE_OBJ_FIRST = re.compile(
+    rf"(?P<obj>[^,]{{2,40}}?)\s+(?:hum|ham)\s+(?:{_DENIAL_VERB}\s+)?nahi\s+(?:karte|dete|bhejte|lete)\b")
+_OBJECT_STOP = re.compile(r"\s(?:as|for|on|in|at|with|to|from|of|by|since|because|until|once|when|if|ki|ke|ka|par|se)\s")
+_FILLER = {
+    "the", "any", "this", "that", "these", "those", "such", "your", "our", "their", "you", "other", "more",
+    "further", "additional", "kind", "type", "sort", "option", "options", "service", "services", "facility",
+    "feature", "currently", "right", "now", "time", "here", "also", "yet", "anything", "something", "and", "but",
+    "unfortunately", "sorry", "namaste", "hey", "hello", "filhal", "abhi", "hamare", "humare", "paas", "hum", "ham",
+    "kya", "hai", "hain", "nahi", "aap", "aapko", "yahan", "sirf", "bhi", "toh",
+    # pronouns and comparatives: "woh option available nahi hoga", "isse zyada addresses" -- not the thing denied
+    "woh", "wo", "yeh", "ye", "uska", "iska", "isse", "usse", "zyada", "jyada", "zada", "itne", "itna", "naye", "naya",
+    "aur", "karne", "karna", "karte", "save", "add",
+}
+
+
+def _content_stems(phrase: str) -> list[str]:
+    phrase = re.sub(r"^\s*(?:to|for|on|in|at|with|from)\s+", "", phrase)  # "ship [to] the USA": the object is USA
+    phrase = _OBJECT_STOP.split(f" {phrase} ", maxsplit=1)[0]          # keep the head of "X as a payment method"
+    words = [w for w in re.findall(r"[a-z]{3,}", phrase) if w not in _FILLER]
+    return [w[:5] for w in words[:2]]                                  # head words only, 5-letter stems
+
+
+def unsupported_negatives(response: str, context: Iterable[str]) -> list[str]:
+    """Stems of things the answer says the company does not offer/accept/support, found in NO context
+    passage. Empty list = nothing flagged. Only the customer-facing company is the subject: "I don't have
+    information about X" is the honest answer and is never matched."""
+    allowed = _normalize(" ".join(context))
+    allowed_words = set(re.findall(r"[a-z]{3,}", allowed))
+    allowed_stems = {w[:5] for w in allowed_words}
+    unsupported: list[str] = []
+    for sentence in _SENTENCE_SPLIT.split(_normalize(response)):
+        for pattern in (_EN_ACTIVE, _EN_PASSIVE, _HI_PASSIVE, _HI_ACTIVE, _HI_ACTIVE_OBJ_FIRST):
+            match = pattern.search(sentence)
+            if not match:
+                continue
+            stems = _content_stems(match.group("obj"))
+            if stems and not any(stem in allowed_stems for stem in stems):
+                unsupported.extend(stems)
+    return unsupported
+
+
 def check_output(text: str, grounded_in_kb: bool, context: Sequence[str] | None = None,
                  conversation: Sequence[str] = ()) -> SafetyResult:
     """Screen a generated answer.
@@ -244,4 +308,6 @@ def check_output(text: str, grounded_in_kb: bool, context: Sequence[str] | None 
         if missing:
             return SafetyResult(safe=False, flag="ungrounded_specifics", escalate=False, category="specifics",
                                 detail=tuple(_format(kind, value) for kind, value in missing))
+        if unsupported_negatives(text, context):
+            return SafetyResult(safe=False, flag="unsupported_negative", escalate=False, category="negative")
     return SafetyResult(safe=True, flag=None, escalate=False)

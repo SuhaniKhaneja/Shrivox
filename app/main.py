@@ -8,6 +8,7 @@ so route handlers stay testable in isolation from each other.
 """
 
 import asyncio
+import math
 
 import structlog
 from fastapi import FastAPI, Request
@@ -40,7 +41,7 @@ async def _failure_response(request: Request, exc: Exception) -> JSONResponse:
     message, _retryable, http_status = CATALOGUE[code]
     logger.error("request_failed", code=code, error_type=type(exc).__name__, path=request.url.path)
     retry_after = getattr(exc, "retry_after", None)
-    headers = {"Retry-After": str(retry_after)} if retry_after else ({"Retry-After": "5"} if http_status == 503 else None)
+    headers = {"Retry-After": str(math.ceil(retry_after))} if retry_after else ({"Retry-After": "5"} if http_status == 503 else None)
     return JSONResponse(status_code=http_status, content={"detail": message, "code": code}, headers=headers)
 
 

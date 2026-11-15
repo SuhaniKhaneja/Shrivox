@@ -84,3 +84,19 @@ NOT validated: retrieval quality with real Gemini embeddings on this corpus (nee
 result (same); behaviour of the planner on your production data distribution; the unpinned CI image version.
 At ~58 chunks the planner will choose an exact scan, so the realistic eval measures embedding/ranking quality,
 not HNSW; HNSW is covered by the integration tests and the benchmark.
+
+
+## Addendum: answer-generation hardening (after the first live Gemini RAG eval)
+
+Live eval (52 questions, user-run): retrieval saturated (Recall@3 = Hit@3 = MRR = 1.0); answer relevance and
+faithfulness 4.85/5 over the 48 judged. Findings and what was done:
+
+| Finding (report) | Change | Verified how |
+|---|---|---|
+| h-14: Jaipur called a "metro" (context lists the metros; 1/1 from the judge). The numeric guard cannot catch it: 4-7 days IS in the context, it is attributed to the wrong entity. | Prompt rule: no assumed categories; unlisted city -> general rule. Judge prompt penalises it. New `category` eval cases (h-53..h-55). | Prompt-contract test only. **No deterministic guard exists for this; effect unproven until a live rerun.** |
+| h-47 / h-49: "we don't accept Bitcoin", "gift wrapping not available" with no KB support (2 of 6 unanswerable) | Prompt rule + `unsupported_negative` output guard + targeted regeneration; 3 more unanswerable cases (h-56..h-58) | Guard flags exactly h-47 and h-49 on the 49 real answers, 0 false positives; BUT I fixed two false positives (h-36, h-41) on that same data, so this is calibration, not a held-out result. |
+| 24 of 44 English-question answers were Hinglish (55%), judged 5/5 regardless; the old prompt line "don't force pure English" biased it | Prompt rewritten; deterministic language check added to the eval (the judge does not score language) | Detector baseline measured on the report; whether the new prompt fixes it needs a live rerun. |
+| 4 of 52 calls failed `UpstreamUnavailable` (cause not recorded); both follow-up cases among them | Retry honours the server's retry delay, fails fast beyond a cap, reports the real Retry-After; eval records stage/reason, retries, paces (`--pause`), and now gives follow-ups their history | Unit tests + mutation checks. **The cause of those 4 failures remains unknown** (rate limit is the likely candidate, not confirmed). |
+
+Not changed, by decision: retrieval and the 0.25 similarity floor. In the report no floor separates answerable from
+unanswerable questions (relevant top scores 0.646-0.821; unanswerable 0.570-0.680, overlapping).
