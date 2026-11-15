@@ -162,14 +162,24 @@ def scope_notes(context: list[str], conversation: list[str]) -> list[str]:
 
 
 def scope_violations(answer: str, context: list[str], conversation: list[str]) -> list[ScopedRule]:
-    """Rules whose listed-scope figure the answer gives (without the other figure) although the CUSTOMER named
-    nothing on the list. The answer's own words never count as evidence: a model that invents "Mumbai" must not
-    excuse itself."""
+    """Flag either tier's figure when it is applied exclusively to the wrong customer scope."""
     stated = _specifics(answer, corpus=False)
     violated = []
+
     for rule in extract_scoped_rules(context):
-        if rule.scoped_figures <= stated and not rule.other_figures <= stated and not _named(rule, conversation):
+        named = _named(rule, conversation)
+
+        has_scoped = rule.scoped_figures <= stated
+        has_other = rule.other_figures <= stated
+
+        # Listed-scope figure given when the customer named no listed entity.
+        if not named and has_scoped and not has_other:
             violated.append(rule)
+
+        # Other-scope figure given when the customer named a listed entity.
+        elif named and has_other and not has_scoped:
+            violated.append(rule)
+
     return violated
 
 

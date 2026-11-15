@@ -100,7 +100,14 @@ def test_a_scoped_figure_given_to_someone_outside_the_list_is_a_violation(answer
     assert scope_violations(answer, [SHIPPING], ["Will my order reach Pune in 5 days?"]) != []
     result = check_scope(answer, [SHIPPING], ["Will my order reach Pune in 5 days?"])
     assert result.flag == "scope_violation" and result.category == "scope" and not result.escalate
-
+@pytest.mark.parametrize("answer,conversation", [
+    ("Mumbai delivery takes 7-10 business days.", ["Will my order reach Mumbai?"]),
+    ("Delhi delivery takes 7-10 business days.", ["Will my order reach Delhi?"]),
+])
+def test_other_figure_given_to_a_listed_place_is_a_violation(answer, conversation):
+    assert scope_violations(answer, [SHIPPING], conversation) != []
+    result = check_scope(answer, [SHIPPING], conversation)
+    assert result.flag == "scope_violation"
 
 @pytest.mark.parametrize("answer,conversation", [
     ("Pune is not one of the metro cities, so delivery takes 7-10 business days.", ["Will my order reach Pune in 5 days?"]),
