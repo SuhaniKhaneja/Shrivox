@@ -36,3 +36,11 @@ def test_the_context_is_still_appended_and_the_empty_case_is_explicit():
     system = build_response_prompt(["refund in 7 days"], [], "q")[0]["content"]
     assert system.startswith(SYSTEM_PROMPT) and "refund in 7 days" in system
     assert "No relevant context found." in build_response_prompt([], [], "q")[0]["content"]
+
+
+def test_scope_notes_follow_the_context_and_are_absent_when_there_are_none():
+    plain = build_response_prompt(["ctx"], [], "q")[0]["content"]
+    assert build_response_prompt(["ctx"], [], "q", notes=[])[0]["content"] == plain
+    with_notes = build_response_prompt(["ctx"], [], "q", notes=["use 7-10 days for Pune"])[0]["content"]
+    assert with_notes.startswith(plain) and "Scope notes" in with_notes and "- use 7-10 days for Pune" in with_notes
+    assert with_notes.index("Context:") < with_notes.index("Scope notes")

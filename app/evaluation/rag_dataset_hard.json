@@ -525,6 +525,33 @@
       "question": "Do you deliver on Sundays?",
       "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that Sunday delivery is or is not offered.",
       "relevant_ids": []
+    },
+    {
+      "id": "h-59",
+      "kind": "category",
+      "question": "Will my order reach Bangalore in 5 days?",
+      "expected_answer": "Bangalore (Bengaluru) is a listed metro: standard delivery takes 4-7 business days, so 5 days is possible but not guaranteed.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-60",
+      "kind": "category",
+      "question": "How many days will standard delivery take?",
+      "expected_answer": "4-7 business days to the listed metro cities (Delhi, Mumbai, Bengaluru, Chennai, Kolkata, Hyderabad) and 7-10 business days to all other locations; ask which city.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-61",
+      "kind": "category",
+      "question": "Gurgaon mein standard delivery kitne din mein hogi?",
+      "expected_answer": "Gurgaon is not a listed metro, so standard delivery takes 7-10 business days.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
     }
   ]
 }

@@ -54,9 +54,16 @@ Message: "{message}"
 Respond with only the category name, nothing else."""
 
 
-def build_response_prompt(context_docs: list[str], conversation_history: list[dict], user_message: str) -> list[dict]:
+def build_response_prompt(context_docs: list[str], conversation_history: list[dict], user_message: str,
+                          notes: list[str] | None = None) -> list[dict]:
+    """`notes` are code-derived statements about which context rule applies to this customer (app/agents/scope.py).
+    Absent or empty, the prompt is byte-for-byte what it was before."""
     context_block = "\n\n".join(context_docs) if context_docs else "No relevant context found."
-    messages = [{"role": "system", "content": SYSTEM_PROMPT + f"\n\nContext:\n{context_block}"}]
+    system = SYSTEM_PROMPT + f"\n\nContext:\n{context_block}"
+    if notes:
+        system += "\n\nScope notes (which rule applies to this customer; they follow from the context above):\n" \
+                  + "\n".join(f"- {n}" for n in notes)
+    messages = [{"role": "system", "content": system}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": user_message})
     return messages

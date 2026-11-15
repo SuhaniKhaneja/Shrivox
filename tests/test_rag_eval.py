@@ -421,3 +421,28 @@ def test_the_hard_dataset_covers_the_answer_side_failure_modes():
     assert {"category", "unanswerable", "follow-up", "hinglish", "typo"} <= kinds
     unanswerable = [c for c in ev.load_dataset(ev.HARD_DATASET_PATH) if c["kind"] == "unanswerable"]
     assert len(unanswerable) >= 9                  # denial-prone ("do you accept/provide/deliver ...") included
+
+
+def test_answer_checks_flag_a_scope_violation_the_numeric_guard_cannot_see():
+    """(report h-53) 4-7 days is in the context, so the numeric guard passes; applying it to Pune is the error."""
+    ctx = ["Standard delivery takes 4-7 business days to metro cities (Delhi, Mumbai, Bengaluru, Chennai, Kolkata, "
+           "Hyderabad) and 7-10 business days to all other locations."]
+    q = "Will my order reach Pune in 5 days?"
+    assert ev._answer_checks(q, "Yes, Pune gets delivery in 4-7 business days.", ctx, [])["guard_flag"] == "scope_violation"
+    assert ev._answer_checks(q, "Pune takes 7-10 business days.", ctx, [])["guard_flag"] is None
+
+
+@pytest.mark.asyncio
+async def test_generate_answer_gives_the_model_the_same_scope_notes_as_the_product():
+    ctx = ["Standard delivery takes 4-7 business days to metro cities (Delhi, Mumbai) and 7-10 business days to all other locations."]
+    chat = AsyncMock(return_value={"text": "x", "latency_ms": 1})
+    with patch.object(ev, "chat_completion", new=chat):
+        await ev.generate_answer("Will my order reach Pune in 5 days?", ctx)
+    assert "applies ONLY to" in chat.await_args.args[0][0]["content"]
+
+
+def test_the_hard_dataset_keeps_the_scope_cases_that_guard_against_a_pune_only_fix():
+    ids = {c["id"]: c["question"] for c in json.load(open(ev.HARD_DATASET_PATH))["cases"]} \
+        if hasattr(ev, "HARD_DATASET_PATH") else {}
+    if ids:
+        assert {"h-53", "h-59", "h-60", "h-61"} <= set(ids)

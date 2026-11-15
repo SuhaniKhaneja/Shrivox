@@ -100,3 +100,25 @@ faithfulness 4.85/5 over the 48 judged. Findings and what was done:
 
 Not changed, by decision: retrieval and the 0.25 similarity floor. In the report no floor separates answerable from
 unanswerable questions (relevant top scores 0.646-0.821; unanswerable 0.570-0.680, overlapping).
+
+## Addendum: scoped figures (live eval case h-53, "Will my order reach Pune in 5 days?")
+
+**What happened.** v4 live eval: 58/58 answered, retrieval correct (`ship-standard` #1), but the answer said 4-7 business
+days. The corpus lists six metro cities for 4-7 days and gives 7-10 days to "all other locations".
+
+**Why the guards missed it (verified deterministically, no Gemini needed).** `check_output` asks "is this figure in the
+context?". `4-7 business days` is, so the answer passed. The prompt rule ("if the customer's city is not listed, use the
+general rule") left a set-membership test to the model. That the model was pulled toward the nearer range because the
+customer wrote "5 days" is a hypothesis; the v4 report's raw answer was not available to me.
+
+**Fix (generic, `app/agents/scope.py`, no extra LLM call).** Finds "<figure> ... (list) ... <other figure> ... all other ..."
+sentences in the retrieved passages (cities, products, payment methods alike). Then:
+1. before generation, adds a "Scope notes" block to the prompt saying which figure applies to this customer;
+2. after generation, `check_scope` flags an answer that gives the listed figure (without the other one) when the
+   customer named nothing on the list -> flag `scope_violation`, one targeted regenerate, then human hand-off.
+Only the customer's own words count as naming a place; the agent's earlier turns and the answer itself never do.
+
+**Limits.** Alias table is small (Bangalore/Bombay/Madras/Gurgaon...) plus typo tolerance, so an unrecognised alias for a
+listed city leads to a retry/hand-off, never a confident wrong figure. Only the "listed group + all other" shape is parsed
+(not reversed word order, not a rule split across chunks). Whether the notes make Gemini answer h-53 correctly is **not
+verified here**: needs a live rerun (`h-53`, plus new h-59 Bangalore alias, h-60 no city named, h-61 Gurgaon).
