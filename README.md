@@ -391,6 +391,24 @@ public ingress.
   Needs Postgres and `GOOGLE_API_KEY` in `.env` (embeds ~58 chunks). Self-written data: compare versions, don't
   quote it as an accuracy figure.
 
+## Answer-generation hardening (from the first live RAG eval)
+
+* **System prompt** (`app/prompts/templates.py`): reply in the language of the customer's *latest* message
+  (English gets plain English; the old "don't force pure English" line is gone); never say the company does not
+  offer/accept something unless the context says so; never assume a category (a city is not a "metro") the
+  customer and context did not state. `tests/test_prompt_contract.py` pins these rules. A test cannot prove the
+  model obeys them; only a rerun of the live eval can.
+* **Output guard**: `unsupported_negative` flag (in `app/agents/guardrails.py`) catches "we don't accept X" /
+  "X is not available" when X is absent from the retrieved context; the answer is regenerated once with a
+  targeted instruction, then handed to a human if it persists. Deliberately conservative (English and romanised
+  Hinglish shapes seen in real output).
+* **Gemini rate limits** (`app/core/upstream.py`): a 429's server-stated retry delay (RetryInfo / Retry-After) is
+  honoured instead of guessed; a delay above `UPSTREAM_MAX_RETRY_WAIT_SECONDS` (default 10) fails fast, and the
+  HTTP 503 carries the real `Retry-After`.
+* **Eval** now records failure stage/reason (never content), retries LLM stages (`--llm-retries`, paced with
+  `--pause`), passes history to follow-up answers, and adds deterministic per-answer checks: language match and
+  what the output guard would flag.
+
 ## Guardrail regression eval
 
 ```

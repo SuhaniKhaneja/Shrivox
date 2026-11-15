@@ -283,3 +283,41 @@ async def test_an_amount_the_customer_quoted_is_not_treated_as_an_invention():
          patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc("Refund amounts equal the price paid.")])):
         result = await shrivox_agent.ainvoke(base_state("maine 1499 diye the, refund?"))
     assert result["safety_flag"] is None and chat.await_count == 2    # no retry needed
+
+
+@pytest.mark.asyncio
+async def test_an_invented_refusal_is_blocked_retried_with_a_targeted_instruction_and_then_accepted():
+    """(report h-47) The KB never mentions Bitcoin; 'we don't accept Bitcoin' is an invented policy."""
+    chat = AsyncMock(side_effect=[
+        _resp("general_query"),
+        _resp("Sorry, we don't accept Bitcoin as a payment method."),                       # invented refusal
+        _resp("I don't have that information in front of me, so let me check and connect you to a human agent."),
+    ])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc("COD is available up to Rs 5,000.")])):
+        result = await shrivox_agent.ainvoke(base_state("Can I pay with Bitcoin?"))
+
+    assert result["response_text"].startswith("I don't have that information")
+    assert result["safety_flag"] == "unsupported_negative" and result["escalate"] is False
+    retry_messages = chat.await_args_list[2].args[0]
+    assert any("not the same as not being offered" in m["content"] for m in retry_messages if m["role"] == "system")
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_the_context_supports_is_not_retried():
+    chat = AsyncMock(side_effect=[_resp("general_query"),
+                                  _resp("Express delivery is not available for hill pincodes.")])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[
+             _doc("Remote and hill pincodes take extra days, and express delivery is not available for them.")])):
+        result = await shrivox_agent.ainvoke(base_state("Can I get express delivery in a hill station?"))
+    assert result["safety_flag"] is None and chat.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_that_persists_after_the_retry_hands_off_to_a_human():
+    chat = AsyncMock(side_effect=[_resp("general_query"), _resp("We don't accept Bitcoin."), _resp("No, we do not accept Bitcoin.")])
+    with patch("app.agents.graph.chat_completion", new=chat), \
+         patch("app.agents.graph.retrieve", new=AsyncMock(return_value=[_doc("COD is available up to Rs 5,000.")])):
+        result = await shrivox_agent.ainvoke(base_state("Can I pay with Bitcoin?"))
+    assert result["escalate"] is True and "Bitcoin" not in result["response_text"]

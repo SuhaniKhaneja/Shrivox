@@ -82,6 +82,11 @@ RETRY_INSTRUCTIONS = {
         "or the conversation. If the context does not say, tell the customer you will check and "
         "offer to connect them with a human agent."
     ),
+    "unsupported_negative": (
+        "Do not say the company does not offer, accept, support or ship something unless the context says so. "
+        "Not being mentioned in the context is not the same as not being offered: say you don't have that "
+        "information, that you will check, and offer to connect the customer with a human agent."
+    ),
 }
 
 

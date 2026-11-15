@@ -477,6 +477,54 @@
       "relevant_ids": [
         "ret-furniture"
       ]
+    },
+    {
+      "id": "h-53",
+      "kind": "category",
+      "question": "Will my order reach Pune in 5 days?",
+      "expected_answer": "Pune is not a listed metro, so standard delivery takes 7-10 business days; 5 days is not promised.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-54",
+      "kind": "category",
+      "question": "Delivery to Mumbai kitne din mein hoga?",
+      "expected_answer": "Mumbai is a listed metro: standard delivery takes 4-7 business days.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-55",
+      "kind": "category",
+      "question": "Is express delivery available in Lucknow?",
+      "expected_answer": "The KB says express covers 20 cities but does not list them: say you will check and offer a human agent rather than confirming or denying.",
+      "relevant_ids": [
+        "ship-express"
+      ]
+    },
+    {
+      "id": "h-56",
+      "kind": "unanswerable",
+      "question": "Do you accept PayPal?",
+      "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that PayPal is or is not accepted.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-57",
+      "kind": "unanswerable",
+      "question": "Do you provide installation for my new AC?",
+      "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that installation is or is not provided.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-58",
+      "kind": "unanswerable",
+      "question": "Do you deliver on Sundays?",
+      "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that Sunday delivery is or is not offered.",
+      "relevant_ids": []
     }
   ]
 }
