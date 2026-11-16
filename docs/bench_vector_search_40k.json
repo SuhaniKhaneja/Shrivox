@@ -1,0 +1,56 @@
+{
+  "total_chunks": 40000,
+  "tenants": 75,
+  "dim": 1536,
+  "k": 3,
+  "pgvector": "0.8.0",
+  "load_seconds": 74.5,
+  "index_build_seconds": 138.1,
+  "before_no_vector_index": {
+    "small (50 chunks)": {
+      "queries": 18,
+      "recall@k": 1.0,
+      "p50_ms": 4.09,
+      "p95_ms": 4.82,
+      "queries_returning_fewer_than_k": 0
+    },
+    "medium (500)": {
+      "queries": 18,
+      "recall@k": 1.0,
+      "p50_ms": 5.8,
+      "p95_ms": 6.59,
+      "queries_returning_fewer_than_k": 0
+    },
+    "large": {
+      "queries": 3,
+      "recall@k": 1.0,
+      "p50_ms": 109.84,
+      "p95_ms": 109.84,
+      "queries_returning_fewer_than_k": 0
+    }
+  },
+  "after_hnsw_iterative": {
+    "small (50 chunks)": {
+      "queries": 18,
+      "recall@k": 1.0,
+      "p50_ms": 3.77,
+      "p95_ms": 4.04,
+      "queries_returning_fewer_than_k": 0
+    },
+    "medium (500)": {
+      "queries": 18,
+      "recall@k": 1.0,
+      "p50_ms": 5.26,
+      "p95_ms": 7.7,
+      "queries_returning_fewer_than_k": 0
+    },
+    "large": {
+      "queries": 3,
+      "recall@k": 1.0,
+      "p50_ms": 4.55,
+      "p95_ms": 4.55,
+      "queries_returning_fewer_than_k": 0
+    }
+  },
+  "note": "synthetic clustered vectors; database time only; see script docstring"
+}

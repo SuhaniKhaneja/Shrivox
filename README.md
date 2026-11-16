@@ -368,6 +368,47 @@ latency, tokens, truncated answers, guardrail interventions). No customer text
 is ever a label. Logs are JSON and honour `LOG_LEVEL`. Keep `/metrics` off the
 public ingress.
 
+## Retrieval at scale (HNSW) and the realistic eval corpus
+
+* **Index.** At startup (and in `scripts/init_db.py`) `app/db/vector_index.py` builds an HNSW index on
+  `knowledge_chunks.embedding` **only when pgvector >= 0.8**, and retrieval then enables
+  `hnsw.iterative_scan`. Reason: pgvector applies the tenant `WHERE business_id = ...` *after* the index
+  scan, so without iterative scans a small tenant can silently get fewer than k results when other tenants'
+  vectors crowd the candidates (reproduced and tested in `tests/integration/test_hnsw_tenant_recall.py`).
+  On older pgvector no index is created and searches stay exact. The build runs in the background
+  (about 2 minutes for 40k chunks at 1536 dims) and uses `CREATE INDEX CONCURRENTLY`, so writes are not blocked;
+  until it finishes, searches use the exact path.
+* **Benchmark** (`scripts/bench_vector_search.py`, synthetic vectors, scratch database; saved result:
+  `docs/bench_vector_search_40k.json`). 40,000 chunks, 75 tenants, pgvector 0.8.0: the largest tenant
+  (20k chunks) went from ~110 ms to ~4.5 ms p50 with recall@3 = 1.0; small (50) and medium (500) tenants
+  were already fast (the btree on `business_id` handles them) and stayed the same. So the index pays off for
+  *large tenants*, not for small ones. No query returned fewer than k rows in either state.
+* **Realistic eval.** `python -m app.evaluation.rag_eval --corpus realistic` seeds a ~52-entry corpus
+  (near-duplicate policies, Hinglish, typos, follow-ups, questions the KB does not cover) into a **throwaway
+  tenant that is deleted afterwards**, reports Recall@K / Hit Rate@K / MRR by question kind, retrieval latency,
+  and an offline **similarity-floor sweep** (missing-context rate vs irrelevant-context rate per threshold).
+  It also runs the index set-up first, so on a database without the index it will build one (as startup would).
+  Needs Postgres and `GOOGLE_API_KEY` in `.env` (embeds ~58 chunks). Self-written data: compare versions, don't
+  quote it as an accuracy figure.
+
+## Answer-generation hardening (from the first live RAG eval)
+
+* **System prompt** (`app/prompts/templates.py`): reply in the language of the customer's *latest* message
+  (English gets plain English; the old "don't force pure English" line is gone); never say the company does not
+  offer/accept something unless the context says so; never assume a category (a city is not a "metro") the
+  customer and context did not state. `tests/test_prompt_contract.py` pins these rules. A test cannot prove the
+  model obeys them; only a rerun of the live eval can.
+* **Output guard**: `unsupported_negative` flag (in `app/agents/guardrails.py`) catches "we don't accept X" /
+  "X is not available" when X is absent from the retrieved context; the answer is regenerated once with a
+  targeted instruction, then handed to a human if it persists. Deliberately conservative (English and romanised
+  Hinglish shapes seen in real output).
+* **Gemini rate limits** (`app/core/upstream.py`): a 429's server-stated retry delay (RetryInfo / Retry-After) is
+  honoured instead of guessed; a delay above `UPSTREAM_MAX_RETRY_WAIT_SECONDS` (default 10) fails fast, and the
+  HTTP 503 carries the real `Retry-After`.
+* **Eval** now records failure stage/reason (never content), retries LLM stages (`--llm-retries`, paced with
+  `--pause`), passes history to follow-up answers, and adds deterministic per-answer checks: language match and
+  what the output guard would flag.
+
 ## Guardrail regression eval
 
 ```

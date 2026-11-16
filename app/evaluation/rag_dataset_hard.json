@@ -1,0 +1,557 @@
+{
+  "_about": "Questions for rag_corpus.json. relevant_ids are corpus entry ids; a retrieved chunk is relevant if it comes from that entry (chunk metadata entry_id). 'kind' lets the report be sliced. Empty relevant_ids = not in the corpus: the right behaviour is to decline, and the retrieval question is how often irrelevant context still gets through. Self-written, so use for comparing versions, not as an accuracy estimate.",
+  "cases": [
+    {
+      "id": "h-01",
+      "kind": "direct",
+      "question": "How long does a refund take for a Cash on Delivery order?",
+      "expected_answer": "By bank transfer (NEFT) in 7-10 business days after the returned item is received; the customer must share account number and IFSC.",
+      "relevant_ids": [
+        "ref-cod"
+      ]
+    },
+    {
+      "id": "h-02",
+      "kind": "direct",
+      "question": "I paid online, in how many days will my refund reach my card?",
+      "expected_answer": "Prepaid refunds are processed in 5-7 business days to the original payment method.",
+      "relevant_ids": [
+        "ref-prepaid"
+      ]
+    },
+    {
+      "id": "h-03",
+      "kind": "paraphrase",
+      "question": "If I take the refund in wallet instead of my bank, how fast do I get it?",
+      "expected_answer": "Wallet credit arrives within 2 hours of the return pickup being completed.",
+      "relevant_ids": [
+        "ref-wallet"
+      ]
+    },
+    {
+      "id": "h-04",
+      "kind": "hinglish",
+      "question": "Mera parcel toota hua aaya, photo kab tak bhejni hai?",
+      "expected_answer": "Within 48 hours of delivery; then refund or replacement can be chosen.",
+      "relevant_ids": [
+        "ref-damaged"
+      ]
+    },
+    {
+      "id": "h-05",
+      "kind": "direct",
+      "question": "They delivered the wrong item. Do I pay for the return?",
+      "expected_answer": "No. The customer is not charged; pickup in 2-3 days and the right item ships in 4-6 days, or a full refund if it is out of stock.",
+      "relevant_ids": [
+        "ref-wrong"
+      ]
+    },
+    {
+      "id": "h-06",
+      "kind": "paraphrase",
+      "question": "I used a bit of the face cream and it caused a rash. Can I get my money back?",
+      "expected_answer": "Opened or partially used cosmetics are not refundable; if defective only an exchange is offered, requested within 5 days of delivery.",
+      "relevant_ids": [
+        "ref-cosmetics"
+      ]
+    },
+    {
+      "id": "h-07",
+      "kind": "direct",
+      "question": "Will my shipping charge be refunded?",
+      "expected_answer": "Not normally; only if the item was defective, damaged or wrong, then it is refunded with the price.",
+      "relevant_ids": [
+        "ref-shipfee"
+      ]
+    },
+    {
+      "id": "h-08",
+      "kind": "direct",
+      "question": "What is the return window for a laptop?",
+      "expected_answer": "Electronics have a 10-day return window, sealed box with all accessories; opened items only if dead on arrival or defective.",
+      "relevant_ids": [
+        "ret-electronics"
+      ]
+    },
+    {
+      "id": "h-09",
+      "kind": "direct",
+      "question": "Can I return sneakers after 10 days?",
+      "expected_answer": "No. Footwear returns are only within 7 days, unworn, in the original box.",
+      "relevant_ids": [
+        "ret-footwear"
+      ]
+    },
+    {
+      "id": "h-10",
+      "kind": "paraphrase",
+      "question": "I bought a kurta 12 days ago and it does not fit, what can I do?",
+      "expected_answer": "Apparel can be returned within 15 days with tags and unworn; a free size exchange is also available within 15 days.",
+      "relevant_ids": [
+        "ret-apparel",
+        "ret-exchange"
+      ]
+    },
+    {
+      "id": "h-11",
+      "kind": "direct",
+      "question": "Can I return a pack of socks?",
+      "expected_answer": "No. Innerwear, swimwear and socks are not returnable for hygiene reasons unless the wrong size or item was sent.",
+      "relevant_ids": [
+        "ret-innerwear"
+      ]
+    },
+    {
+      "id": "h-12",
+      "kind": "paraphrase",
+      "question": "I already exchanged the size once and need to swap again. Is it free?",
+      "expected_answer": "No. A second exchange for the same item costs Rs 79 for reverse pickup.",
+      "relevant_ids": [
+        "ret-exchange"
+      ]
+    },
+    {
+      "id": "h-13",
+      "kind": "hinglish",
+      "question": "Courier return pickup ke liye nahi aaya, ab kya hoga?",
+      "expected_answer": "Courier tries 3 times; if all fail the return request closes and the customer must request again.",
+      "relevant_ids": [
+        "ret-pickup"
+      ]
+    },
+    {
+      "id": "h-14",
+      "kind": "direct",
+      "question": "When will my order reach Jaipur?",
+      "expected_answer": "Jaipur is not a listed metro: standard delivery takes 7-10 business days.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-15",
+      "kind": "direct",
+      "question": "Is there any way to get my order in a day or two?",
+      "expected_answer": "Express delivery in 1-2 business days in 20 cities for Rs 99, order before 2 pm for same-day dispatch.",
+      "relevant_ids": [
+        "ship-express"
+      ]
+    },
+    {
+      "id": "h-16",
+      "kind": "paraphrase",
+      "question": "My cart is Rs 450, will I be charged for delivery?",
+      "expected_answer": "Yes, Rs 49 shipping applies below Rs 499; it is free from Rs 499.",
+      "relevant_ids": [
+        "ship-fee"
+      ]
+    },
+    {
+      "id": "h-17",
+      "kind": "direct",
+      "question": "I live in a hill station. Can I choose express delivery?",
+      "expected_answer": "No. Remote and hill pincodes take 2-3 extra days and express is not available.",
+      "relevant_ids": [
+        "ship-remote"
+      ]
+    },
+    {
+      "id": "h-18",
+      "kind": "paraphrase",
+      "question": "My parcel came 5 days after the promised date. Do I get anything for it?",
+      "expected_answer": "Orders more than 3 days late are eligible for a Rs 100 compensation coupon, issued by support on request.",
+      "relevant_ids": [
+        "ship-delay"
+      ]
+    },
+    {
+      "id": "h-19",
+      "kind": "hinglish",
+      "question": "Order dispatch ho gaya, ab cancel kaise karun?",
+      "expected_answer": "After dispatch the order cannot be cancelled; only a return after delivery.",
+      "relevant_ids": [
+        "ord-cancel"
+      ]
+    },
+    {
+      "id": "h-20",
+      "kind": "direct",
+      "question": "I entered the wrong flat number. Can I fix the address?",
+      "expected_answer": "Only within 2 hours of placing the order and before dispatch, from My Orders > Edit address.",
+      "relevant_ids": [
+        "ord-address"
+      ]
+    },
+    {
+      "id": "h-21",
+      "kind": "typo",
+      "question": "hw do i trak my ordr",
+      "expected_answer": "Through the SMS link sent at dispatch or My Orders; status refreshes every 6-12 hours.",
+      "relevant_ids": [
+        "ord-track"
+      ]
+    },
+    {
+      "id": "h-22",
+      "kind": "paraphrase",
+      "question": "The tracking page has shown the same status for two days.",
+      "expected_answer": "After 48 hours without movement support raises a trace with logistics, who reply within 24 hours.",
+      "relevant_ids": [
+        "ord-stuck"
+      ]
+    },
+    {
+      "id": "h-23",
+      "kind": "direct",
+      "question": "I need a GST invoice for my company.",
+      "expected_answer": "The GST invoice is emailed after delivery and downloadable from My Orders; the business GSTIN can only be added at checkout.",
+      "relevant_ids": [
+        "ord-invoice"
+      ]
+    },
+    {
+      "id": "h-24",
+      "kind": "direct",
+      "question": "I want to order 25 units of the same item for my office.",
+      "expected_answer": "More than 10 units of one item is a bulk order, placed through the sales team, not the app.",
+      "relevant_ids": [
+        "ord-bulk"
+      ]
+    },
+    {
+      "id": "h-25",
+      "kind": "hinglish",
+      "question": "Payment cut ho gaya lekin order fail dikha raha hai",
+      "expected_answer": "The bank reverses it automatically in 5-7 business days; do not pay again right away, check status after 30 minutes.",
+      "relevant_ids": [
+        "pay-deducted"
+      ]
+    },
+    {
+      "id": "h-26",
+      "kind": "paraphrase",
+      "question": "My UPI payment is stuck on pending.",
+      "expected_answer": "Usually resolved within 30 minutes; if debited but no order, the amount returns in 3-5 business days.",
+      "relevant_ids": [
+        "pay-upi"
+      ]
+    },
+    {
+      "id": "h-27",
+      "kind": "direct",
+      "question": "Can I pay cash on delivery for a Rs 7,000 order?",
+      "expected_answer": "No. COD is only up to Rs 5,000 (with a Rs 40 fee); above that online payment is required.",
+      "relevant_ids": [
+        "pay-cod"
+      ]
+    },
+    {
+      "id": "h-28",
+      "kind": "direct",
+      "question": "Is EMI possible on a Rs 2,500 purchase?",
+      "expected_answer": "No. EMI starts at Rs 3,000 on credit cards, for 3, 6 or 9 months.",
+      "relevant_ids": [
+        "pay-emi"
+      ]
+    },
+    {
+      "id": "h-29",
+      "kind": "paraphrase",
+      "question": "My card keeps getting declined at checkout.",
+      "expected_answer": "Check online/international transactions are enabled and the OTP reached the registered number; three declines block cards for 1 hour.",
+      "relevant_ids": [
+        "pay-card"
+      ]
+    },
+    {
+      "id": "h-30",
+      "kind": "paraphrase",
+      "question": "Why won't my discount code work?",
+      "expected_answer": "Cart below the minimum, expired, or already applied; one coupon per order and not combinable with wallet cashback.",
+      "relevant_ids": [
+        "pay-coupon"
+      ]
+    },
+    {
+      "id": "h-31",
+      "kind": "direct",
+      "question": "How long is a gift card valid?",
+      "expected_answer": "12 months from purchase; usable across orders until the balance is zero.",
+      "relevant_ids": [
+        "pay-giftcard"
+      ]
+    },
+    {
+      "id": "h-32",
+      "kind": "typo",
+      "question": "i forgott my pasword",
+      "expected_answer": "Use Forgot Password on the login screen; OTP to the registered mobile is valid for 10 minutes.",
+      "relevant_ids": [
+        "acc-reset"
+      ]
+    },
+    {
+      "id": "h-33",
+      "kind": "paraphrase",
+      "question": "My account says locked even after I reset the password.",
+      "expected_answer": "Locked for 30 minutes after 5 wrong attempts; resetting the password does not unlock it earlier.",
+      "relevant_ids": [
+        "acc-lock"
+      ]
+    },
+    {
+      "id": "h-34",
+      "kind": "direct",
+      "question": "I lost my old SIM, how do I change my registered number?",
+      "expected_answer": "An OTP on the OLD number is normally required; without it the customer must contact support with a government ID.",
+      "relevant_ids": [
+        "acc-phone"
+      ]
+    },
+    {
+      "id": "h-35",
+      "kind": "direct",
+      "question": "What is the warranty on a refrigerator compressor?",
+      "expected_answer": "Appliances have 2 years; the compressor of refrigerators and ACs is covered for 5 years.",
+      "relevant_ids": [
+        "war-appl"
+      ]
+    },
+    {
+      "id": "h-36",
+      "kind": "paraphrase",
+      "question": "Can I buy extended warranty a few months after delivery?",
+      "expected_answer": "Only within 30 days of delivery, 1 additional year at 8% of the product price.",
+      "relevant_ids": [
+        "war-ext"
+      ]
+    },
+    {
+      "id": "h-37",
+      "kind": "direct",
+      "question": "When do my loyalty points expire?",
+      "expected_answer": "12 months after they are credited, with a reminder 30 days before.",
+      "relevant_ids": [
+        "loy-expiry"
+      ]
+    },
+    {
+      "id": "h-38",
+      "kind": "paraphrase",
+      "question": "How much of my bill can I pay with points?",
+      "expected_answer": "At most 20% of the order value; 100 points = Rs 10; not on gift cards.",
+      "relevant_ids": [
+        "loy-redeem"
+      ]
+    },
+    {
+      "id": "h-39",
+      "kind": "long-doc",
+      "question": "What happens if I am not home for the third delivery attempt?",
+      "expected_answer": "After the third failed attempt the parcel returns to the warehouse and the refund starts within 3 business days.",
+      "relevant_ids": [
+        "long-delivery"
+      ]
+    },
+    {
+      "id": "h-40",
+      "kind": "long-doc",
+      "question": "How do I report a fake product I received?",
+      "expected_answer": "Raise a counterfeit report from the order page; reviewed within 72 hours; confirmed cases get a full refund plus a Rs 200 coupon.",
+      "relevant_ids": [
+        "long-sellers"
+      ]
+    },
+    {
+      "id": "h-41",
+      "kind": "long-doc",
+      "question": "How many addresses can I save in the app?",
+      "expected_answer": "Up to 10 saved addresses per account.",
+      "relevant_ids": [
+        "long-app"
+      ]
+    },
+    {
+      "id": "h-42",
+      "kind": "follow-up",
+      "question": "aur kitne din lagenge?",
+      "expected_answer": "Cash on Delivery refunds take 7-10 business days after the item is received.",
+      "relevant_ids": [
+        "ref-cod"
+      ],
+      "history": [
+        {
+          "role": "customer",
+          "content": "Mera COD order ka refund chahiye"
+        },
+        {
+          "role": "agent",
+          "content": "Zaroor, main madad karta hoon."
+        }
+      ]
+    },
+    {
+      "id": "h-43",
+      "kind": "follow-up",
+      "question": "and what about the second time?",
+      "expected_answer": "A second exchange for the same item costs Rs 79 for reverse pickup.",
+      "relevant_ids": [
+        "ret-exchange"
+      ],
+      "history": [
+        {
+          "role": "customer",
+          "content": "Can I exchange my shirt size for free?"
+        },
+        {
+          "role": "agent",
+          "content": "Yes, one free exchange per item."
+        }
+      ]
+    },
+    {
+      "id": "h-44",
+      "kind": "unanswerable",
+      "question": "Do you ship to the USA?",
+      "expected_answer": "Not covered; say so and offer a human agent.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-45",
+      "kind": "unanswerable",
+      "question": "Is there a Shrivox store near Connaught Place?",
+      "expected_answer": "Not covered; say so and offer a human agent.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-46",
+      "kind": "unanswerable",
+      "question": "Will you match the price if Amazon sells it cheaper?",
+      "expected_answer": "Not covered; no price-match policy exists in the knowledge base.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-47",
+      "kind": "unanswerable",
+      "question": "Can I pay with Bitcoin?",
+      "expected_answer": "Not covered; do not invent payment methods.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-48",
+      "kind": "unanswerable",
+      "question": "Are you hiring delivery partners?",
+      "expected_answer": "Not covered; outside support scope.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-49",
+      "kind": "unanswerable",
+      "question": "Kya aap gift wrapping karte ho?",
+      "expected_answer": "Not covered; say you will check and offer a human agent.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-50",
+      "kind": "direct",
+      "question": "I paid with a gift card, where does my refund go and how fast?",
+      "expected_answer": "Back to the same gift card balance within 24 hours of the return being approved; validity is not extended.",
+      "relevant_ids": [
+        "ref-giftcard"
+      ]
+    },
+    {
+      "id": "h-51",
+      "kind": "paraphrase",
+      "question": "Net banking se paise kat gaye par order confirm nahi hua, wapas kab aayenge?",
+      "expected_answer": "The bank reverses it in 2-4 business days; do not pay again until the status in My Orders is final.",
+      "relevant_ids": [
+        "pay-netbanking"
+      ]
+    },
+    {
+      "id": "h-52",
+      "kind": "direct",
+      "question": "Can I return a sofa after I have assembled it?",
+      "expected_answer": "No. Furniture is returnable within 7 days only if unassembled and unused; assembly damage is not accepted.",
+      "relevant_ids": [
+        "ret-furniture"
+      ]
+    },
+    {
+      "id": "h-53",
+      "kind": "category",
+      "question": "Will my order reach Pune in 5 days?",
+      "expected_answer": "Pune is not a listed metro, so standard delivery takes 7-10 business days; 5 days is not promised.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-54",
+      "kind": "category",
+      "question": "Delivery to Mumbai kitne din mein hoga?",
+      "expected_answer": "Mumbai is a listed metro: standard delivery takes 4-7 business days.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-55",
+      "kind": "category",
+      "question": "Is express delivery available in Lucknow?",
+      "expected_answer": "The KB says express covers 20 cities but does not list them: say you will check and offer a human agent rather than confirming or denying.",
+      "relevant_ids": [
+        "ship-express"
+      ]
+    },
+    {
+      "id": "h-56",
+      "kind": "unanswerable",
+      "question": "Do you accept PayPal?",
+      "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that PayPal is or is not accepted.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-57",
+      "kind": "unanswerable",
+      "question": "Do you provide installation for my new AC?",
+      "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that installation is or is not provided.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-58",
+      "kind": "unanswerable",
+      "question": "Do you deliver on Sundays?",
+      "expected_answer": "Not covered; say you will check and offer a human agent. Do not state that Sunday delivery is or is not offered.",
+      "relevant_ids": []
+    },
+    {
+      "id": "h-59",
+      "kind": "category",
+      "question": "Will my order reach Bangalore in 5 days?",
+      "expected_answer": "Bangalore (Bengaluru) is a listed metro: standard delivery takes 4-7 business days, so 5 days is possible but not guaranteed.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-60",
+      "kind": "category",
+      "question": "How many days will standard delivery take?",
+      "expected_answer": "4-7 business days to the listed metro cities (Delhi, Mumbai, Bengaluru, Chennai, Kolkata, Hyderabad) and 7-10 business days to all other locations; ask which city.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    },
+    {
+      "id": "h-61",
+      "kind": "category",
+      "question": "Gurgaon mein standard delivery kitne din mein hogi?",
+      "expected_answer": "Gurgaon is not a listed metro, so standard delivery takes 7-10 business days.",
+      "relevant_ids": [
+        "ship-standard"
+      ]
+    }
+  ]
+}

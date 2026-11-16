@@ -41,11 +41,12 @@ import uuid
 import structlog
 from google import genai
 from google.genai import types
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.upstream import UpstreamEmptyResponse, call_with_retry
+from app.db import vector_index
 from app.db.models import KnowledgeChunk
 
 logger = structlog.get_logger()
@@ -145,6 +146,12 @@ def contextual_query(message: str, history: list[dict]) -> str | None:
 
 
 async def _nearest(db: AsyncSession, business_id: uuid.UUID, vector: list[float], limit: int):
+    if vector_index.ITERATIVE_SCAN_AVAILABLE:
+        # With an HNSW index the tenant filter runs AFTER the index scan, so a small tenant can get
+        # fewer than `limit` rows when other tenants' vectors crowd the candidates. Iterative scan keeps
+        # going until the filter is satisfied. Transaction-local (true): it cannot leak to other users
+        # of the pooled connection. strict_order keeps results exactly ordered.
+        await db.execute(text("SELECT set_config('hnsw.iterative_scan', 'strict_order', true)"))
     distance = KnowledgeChunk.embedding.cosine_distance(vector)
     stmt = (
         select(KnowledgeChunk, distance.label("distance"))

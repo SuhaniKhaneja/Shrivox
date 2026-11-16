@@ -141,3 +141,68 @@ class TestSpecificsCheck:
     def test_hinglish_promise_words_are_caught_when_ungrounded(self):
         assert check_output("Refund pakka milega", grounded_in_kb=False).flag == "ungrounded_promise"
         assert check_output("Refund pakka milega", grounded_in_kb=True).safe      # grounded: allowed, as before
+
+
+# =============================================================================
+# Unsupported negatives: "we don't accept X" / "X is not available" when the context never says so.
+# Fixtures marked (report) are real answers from the first live Gemini evaluation.
+# =============================================================================
+from app.agents.guardrails import unsupported_negatives
+
+PAY_CONTEXT = ["COD is available up to Rs 5,000. Prepaid refunds take 5-7 business days. The bank reverses debited payments."]
+SHIP_CONTEXT = ["Remote and hill pincodes take an extra 2-3 business days, and express delivery is not available for them."]
+RETURN_CONTEXT = ["Opened or partially used cosmetics are not refundable. Innerwear, swimwear and socks are not returnable for hygiene reasons."]
+
+
+@pytest.mark.parametrize("answer", [
+    # (report) h-47 -- the KB never mentions Bitcoin; stating it is not accepted invents a policy
+    "Hey! I'm sorry, but we don't accept Bitcoin as a payment method. I'll need to check if there are other options.",
+    # (report) h-49 -- Hinglish: "gift wrapping facility is not available with us"
+    "Namaste! Gift wrapping ki facility filhal hamare paas available nahi hai. Kya main aapki baat kisi senior se karwa doon?",
+    "Unfortunately we do not offer installation services.",
+    "Sorry, we can’t ship to the USA.",                       # curly apostrophe
+    "Express pickup is not available.",
+    "Bitcoin hum accept nahi karte.",
+])
+def test_a_denial_of_something_the_context_never_mentions_is_flagged(answer):
+    assert unsupported_negatives(answer, PAY_CONTEXT) != [], answer
+    result = check_output(answer, grounded_in_kb=True, context=PAY_CONTEXT)
+    assert result.flag == "unsupported_negative" and not result.escalate
+
+
+@pytest.mark.parametrize("answer,context", [
+    # (report) answers whose denials ARE in the context -- must not be touched
+    ("I'm sorry, but we cannot offer refunds for cosmetics that have been opened.", RETURN_CONTEXT),
+    ("For hygiene reasons, we can't accept returns or exchanges on socks once delivered.", RETURN_CONTEXT),
+    ("Unfortunately, express delivery is not available for hill station pincodes.", SHIP_CONTEXT),
+    # (report) the correct way to handle an uncovered topic
+    ("I'm sorry, but I don't have information about international shipping. Shall I escalate this?", PAY_CONTEXT),
+    ("I don't have any information regarding price matching. I'll check with my supervisor.", PAY_CONTEXT),
+    # (report) h-36 and h-41: correct Hinglish answers a first version of the rule wrongly flagged
+    ("Nahi, extended warranty ke liye aapko delivery ke 30 days ke andar hi purchase karna hota hai. "
+     "Abhi toh woh option available nahi hoga.", ["Extended warranty can be bought within 30 days of delivery."]),
+    ("Aap maximum 10 addresses save kar sakte hain. Isse zyada addresses save karne ka option filhal app mein "
+     "available nahi hai.", ["You can save up to 10 addresses per account in the app."]),
+    # plain answers with no denial
+    ("COD is available up to Rs 5,000.", PAY_CONTEXT),
+    ("Opened cosmetics cannot be refunded, as per the policy.", RETURN_CONTEXT),
+    # not a company-policy denial
+    ("You can't use two coupons together, and your cart is below the minimum.", ["One coupon per order; cart minimum applies."]),
+])
+def test_denials_the_context_supports_and_honest_i_dont_know_answers_pass(answer, context):
+    assert unsupported_negatives(answer, context) == [], answer
+    assert check_output(answer, grounded_in_kb=True, context=context).safe
+
+
+def test_an_object_the_customer_named_is_still_unsupported_unless_the_context_has_it():
+    # "Do you ship to the USA?" -> the customer saying USA does not make "we don't ship to the USA" a policy
+    assert unsupported_negatives("We don't ship to the USA.", SHIP_CONTEXT) != []
+
+
+def test_legacy_callers_without_context_are_not_affected():
+    assert check_output("We don't accept Bitcoin.", grounded_in_kb=True).safe
+
+
+def test_the_flag_carries_no_answer_text():
+    result = check_output("We don't accept Bitcoin.", grounded_in_kb=True, context=PAY_CONTEXT)
+    assert "bitcoin" not in repr(result).lower()

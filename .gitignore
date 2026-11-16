@@ -10,3 +10,5 @@ dump.rdb
 .ruff_cache/
 .env.*
 !.env.example
+rag_eval_report.json
+bench_vector.json

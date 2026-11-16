@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: float = Field(default=15.0, ge=1, le=120)
     upstream_max_attempts: int = Field(default=3, ge=1, le=5)
     upstream_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
+    # The longest wait a 429's server-supplied retry delay is honoured for. A longer ask fails fast: a
+    # customer on a voice call cannot wait a minute for a quota window to reset.
+    upstream_max_retry_wait_seconds: float = Field(default=10.0, ge=0, le=120)
     # Hard ceiling for one chat turn (intent + retrieval + generation + any
     # safety retry), so stacked retries can never leave a customer waiting minutes.
     turn_timeout_seconds: float = Field(default=45.0, ge=5, le=300)

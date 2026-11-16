@@ -347,3 +347,133 @@ def test_a_turns_messages_get_strictly_ordered_timestamps_even_on_a_frozen_clock
     customer, agent = db.add_all.call_args.args[0]
     assert (customer.role, agent.role) == ("customer", "agent")
     assert customer.created_at < agent.created_at
+
+
+# ------------------------------------------------ rate limits: honour the server's retry delay
+
+def _rate_limited(delay: str | None = None, *, message: str = "quota"):
+    from google.genai import errors
+    details = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay}] if delay else []
+    body = {"error": {"code": 429, "message": message, "status": "RESOURCE_EXHAUSTED", "details": details}}
+    return errors.ClientError(429, body)
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    from app.core import upstream
+    recorded = []
+
+    async def fake_sleep(seconds):
+        recorded.append(seconds)
+
+    monkeypatch.setattr(upstream, "_sleep", fake_sleep)
+    return recorded
+
+
+@pytest.mark.parametrize("delay,expected", [("7s", 7.0), ("0.5s", 0.5), ("34.123s", 34.123), ("2", 2.0)])
+def test_the_servers_retry_delay_is_parsed(delay, expected):
+    from app.core.upstream import retry_after_seconds
+    assert retry_after_seconds(_rate_limited(delay)) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("exc", [
+    _rate_limited(None), _rate_limited("soon"), _rate_limited("-5s"), _rate_limited("nan"), _rate_limited("infs"),
+    api_error(503), TimeoutError(),
+])
+def test_a_missing_or_malformed_retry_delay_is_none_never_an_error(exc):
+    from app.core.upstream import retry_after_seconds
+    assert retry_after_seconds(exc) is None
+
+
+def test_a_retry_after_header_is_honoured_when_the_body_has_no_delay():
+    from google.genai import errors
+    from app.core.upstream import retry_after_seconds
+    response = httpx.Response(429, headers={"Retry-After": "3"})
+    exc = errors.ClientError(429, {"error": {"code": 429, "message": "x", "status": "RESOURCE_EXHAUSTED"}}, response)
+    assert retry_after_seconds(exc) == 3.0
+
+
+def test_a_429_waits_the_time_the_server_asked_for_not_a_guess(sleeps):
+    from app.core.upstream import call_with_retry
+    calls = []
+
+    async def fn():
+        calls.append(1)
+        if len(calls) == 1:
+            raise _rate_limited("2s")
+        return "ok"
+
+    assert run(call_with_retry("llm", fn)) == "ok"
+    assert sleeps == [2.0]                    # the exponential default would be 0 here (backoff is 0 in this suite)
+
+
+def test_a_delay_longer_than_a_call_can_wait_fails_fast_and_says_how_long(sleeps, monkeypatch):
+    from app.core.upstream import UpstreamUnavailable, call_with_retry
+    monkeypatch.setattr(settings, "upstream_max_retry_wait_seconds", 10.0)
+    calls = []
+
+    async def fn():
+        calls.append(1)
+        raise _rate_limited("60s")
+
+    with pytest.raises(UpstreamUnavailable) as info:
+        run(call_with_retry("llm", fn))
+    assert len(calls) == 1 and sleeps == []                       # no point waiting a minute inside a voice call
+    assert info.value.reason == "http_429" and info.value.status_code == 429 and info.value.retry_after == 60.0
+
+
+def test_a_delay_within_the_cap_is_retried_across_attempts_and_the_final_error_keeps_it(sleeps, monkeypatch):
+    from app.core.upstream import UpstreamUnavailable, call_with_retry
+    monkeypatch.setattr(settings, "upstream_max_retry_wait_seconds", 10.0)
+    calls = []
+
+    async def fn():
+        calls.append(1)
+        raise _rate_limited("3s")
+
+    with pytest.raises(UpstreamUnavailable) as info:
+        run(call_with_retry("llm", fn))
+    assert len(calls) == 3 and sleeps == [3.0, 3.0] and info.value.retry_after == 3.0
+
+
+def test_without_a_server_delay_the_exponential_backoff_is_unchanged(sleeps):
+    from app.core.upstream import UpstreamUnavailable, call_with_retry
+    calls = []
+
+    async def fn():
+        calls.append(1)
+        raise api_error(503)
+
+    with pytest.raises(UpstreamUnavailable) as info:
+        run(call_with_retry("llm", fn))
+    assert len(calls) == 3 and info.value.retry_after is None
+
+
+def test_retry_logs_include_the_wait_and_still_never_the_error_text(sleeps):
+    from app.core.upstream import UpstreamUnavailable, call_with_retry
+
+    async def fn():
+        raise _rate_limited("1s", message=SECRET)
+
+    with capture_logs() as logs, pytest.raises(UpstreamUnavailable):
+        run(call_with_retry("llm", fn))
+    retries = [l for l in logs if l["event"] == "upstream_retry"]
+    assert retries and all(r["status_code"] == 429 and r["retry_after"] == 1.0 for r in retries)
+    assert SECRET not in str(logs)
+
+
+def test_the_http_retry_after_header_carries_the_servers_value_rounded_up():
+    from types import SimpleNamespace
+    from app.core.upstream import UpstreamUnavailable
+    from app.main import _failure_response
+    request = SimpleNamespace(url=SimpleNamespace(path="/conversations"))
+    response = run(_failure_response(request, UpstreamUnavailable("llm", "http_429", 429, retry_after=34.2)))
+    assert response.status_code == 503 and response.headers["retry-after"] == "35"
+    response = run(_failure_response(request, UpstreamUnavailable("llm", "timeout")))
+    assert response.headers["retry-after"] == "5"                 # unchanged default when the server gave none
+
+
+@pytest.mark.parametrize("bad", [-1, 121])
+def test_the_retry_wait_cap_is_bounded(bad):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, google_api_key="k", jwt_secret="s", upstream_max_retry_wait_seconds=bad)

@@ -1,0 +1,269 @@
+{
+  "_about": "Realistic evaluation corpus (self-written, ~50 entries). Built to be HARDER than the 7-entry demo KB: many near-duplicate policies that differ by one fact (prepaid vs COD vs wallet refunds, apparel vs electronics vs footwear returns, 3 different 5-7 day clocks), Hinglish entries, and 3 long handbook entries that the chunker splits so an answer can sit in a later chunk. It is seeded into a THROWAWAY tenant per run and deleted afterwards. The corpus chunking below is deliberately small so the long entries split into several chunks.",
+  "chunking": {
+    "target_words": 70,
+    "overlap_words": 12
+  },
+  "entries": [
+    {
+      "id": "ref-prepaid",
+      "category": "refunds",
+      "text": "Refund for prepaid orders: a full refund can be requested within 7 days of delivery if the product is unused and in original packaging. The refund is processed in 5-7 business days to the original payment method."
+    },
+    {
+      "id": "ref-cod",
+      "category": "refunds",
+      "text": "Refund for Cash on Delivery orders: because no online payment exists, the refund is sent by bank transfer (NEFT). The customer must share account number and IFSC in the app. It arrives in 7-10 business days after the returned item is received."
+    },
+    {
+      "id": "ref-wallet",
+      "category": "refunds",
+      "text": "Refund to Shrivox wallet: if the customer chooses wallet credit instead of the original payment method, the amount is credited within 2 hours of the return pickup being completed."
+    },
+    {
+      "id": "ref-damaged",
+      "category": "refunds",
+      "text": "Agar order damaged ya defective aaya hai, delivery ke 48 ghante ke andar photo proof upload karna zaroori hai. Uske baad customer refund ya replacement choose kar sakta hai. Replacement 3-5 din mein aata hai."
+    },
+    {
+      "id": "ref-wrong",
+      "category": "refunds",
+      "text": "Wrong item delivered: the customer is not charged anything. Pickup of the wrong item is arranged within 2-3 days and the correct item is shipped in 4-6 days, or the full amount is refunded if the correct item is out of stock."
+    },
+    {
+      "id": "ref-cosmetics",
+      "category": "refunds",
+      "text": "Cosmetics and personal care products that have been opened or partially used cannot be refunded. If the product was defective, only an exchange is offered, and it must be requested within 5 days of delivery."
+    },
+    {
+      "id": "ref-shipfee",
+      "category": "refunds",
+      "text": "Delivery charges are non-refundable, except when the item was defective, damaged or the wrong item was sent. In those cases the delivery charge is refunded along with the product price."
+    },
+    {
+      "id": "ret-apparel",
+      "category": "returns",
+      "text": "Apparel can be returned within 15 days of delivery. Tags must be attached and the item must be unwashed and unworn."
+    },
+    {
+      "id": "ret-electronics",
+      "category": "returns",
+      "text": "Electronics have a 10-day return window and must be returned in a sealed box with all accessories. An opened electronic item is accepted for return only if it is dead on arrival or defective."
+    },
+    {
+      "id": "ret-footwear",
+      "category": "returns",
+      "text": "Footwear can be returned within 7 days if unworn and in the original shoe box. Shoes with any sign of outdoor use are rejected."
+    },
+    {
+      "id": "ret-innerwear",
+      "category": "returns",
+      "text": "For hygiene reasons innerwear, swimwear and socks cannot be returned or exchanged once delivered, unless the wrong size or item was sent by us."
+    },
+    {
+      "id": "ret-exchange",
+      "category": "returns",
+      "text": "Size exchange: one free size exchange per order item within 15 days of delivery, subject to stock. A second exchange for the same item is charged Rs 79 for reverse pickup."
+    },
+    {
+      "id": "ret-pickup",
+      "category": "returns",
+      "text": "Return ke liye courier 3 baar pickup attempt karta hai. Teeno attempt fail hone par return request band ho jaati hai, aur customer ko dobara request daalni padti hai."
+    },
+    {
+      "id": "ship-standard",
+      "category": "shipping",
+      "text": "Standard delivery takes 4-7 business days to metro cities (Delhi, Mumbai, Bengaluru, Chennai, Kolkata, Hyderabad) and 7-10 business days to all other locations."
+    },
+    {
+      "id": "ship-express",
+      "category": "shipping",
+      "text": "Express delivery in 1-2 business days is available in 20 cities for a fee of Rs 99. Express orders must be placed before 2 pm to ship the same day."
+    },
+    {
+      "id": "ship-fee",
+      "category": "shipping",
+      "text": "Shipping is free on orders of Rs 499 and above. For orders below Rs 499, a shipping fee of Rs 49 is charged at checkout."
+    },
+    {
+      "id": "ship-remote",
+      "category": "shipping",
+      "text": "Remote and hill pincodes take an extra 2-3 business days over the standard estimate, and express delivery is not available for them."
+    },
+    {
+      "id": "ship-delay",
+      "category": "shipping",
+      "text": "If an order arrives more than 3 days after the estimated delivery date, the customer is eligible for a Rs 100 compensation coupon, which support can issue on request."
+    },
+    {
+      "id": "ord-cancel",
+      "category": "orders",
+      "text": "Order cancel karne ke liye dispatch se pehle 'My Orders' mein cancel button milta hai. Dispatch ke baad cancel nahi hota, delivery ke baad sirf return kar sakte hain."
+    },
+    {
+      "id": "ord-address",
+      "category": "orders",
+      "text": "The delivery address can be changed only within 2 hours of placing the order and before dispatch, from 'My Orders' > Edit address. After that the order cannot be redirected."
+    },
+    {
+      "id": "ord-track",
+      "category": "orders",
+      "text": "Tracking: an SMS link is sent at dispatch, and live status is also under 'My Orders'. Status refreshes every 6-12 hours."
+    },
+    {
+      "id": "ord-stuck",
+      "category": "orders",
+      "text": "If tracking shows no movement for 48 hours, support raises a trace with the logistics team, who respond within 24 hours."
+    },
+    {
+      "id": "ord-invoice",
+      "category": "orders",
+      "text": "A GST invoice is emailed after delivery. It can also be downloaded from 'My Orders' > Download invoice. Business GSTIN can be added only at checkout, not afterwards."
+    },
+    {
+      "id": "ord-bulk",
+      "category": "orders",
+      "text": "Orders of more than 10 units of a single item are treated as bulk orders and must be placed through the sales team at the bulk-orders email; they cannot be ordered through the app."
+    },
+    {
+      "id": "pay-deducted",
+      "category": "payments",
+      "text": "If money was deducted but the order shows failed, the bank reverses it automatically within 5-7 business days. Do not pay again immediately; check order status after 30 minutes."
+    },
+    {
+      "id": "pay-upi",
+      "category": "payments",
+      "text": "A UPI payment that shows pending is usually resolved within 30 minutes. If the bank confirms the debit but the order is not created, the amount is returned to the UPI account in 3-5 business days."
+    },
+    {
+      "id": "pay-cod",
+      "category": "payments",
+      "text": "Cash on Delivery is available for orders up to Rs 5,000, with a COD handling fee of Rs 40. Orders above Rs 5,000 must be paid online."
+    },
+    {
+      "id": "pay-emi",
+      "category": "payments",
+      "text": "EMI is available on credit cards for orders of Rs 3,000 and above, for 3, 6 or 9 months. No-cost EMI applies only on selected bank cards; other cards carry the bank's interest."
+    },
+    {
+      "id": "pay-card",
+      "category": "payments",
+      "text": "If a card payment is declined, check that online and international transactions are enabled and that the OTP reached the registered mobile number. Three consecutive declines block card payments for 1 hour."
+    },
+    {
+      "id": "pay-coupon",
+      "category": "payments",
+      "text": "A coupon can fail because the cart value is below the minimum, the coupon has expired, or it is already applied. Only one coupon can be used per order and coupons cannot be combined with wallet cashback."
+    },
+    {
+      "id": "pay-giftcard",
+      "category": "payments",
+      "text": "Gift cards are valid for 12 months from purchase and can be used across multiple orders until the balance is zero. Gift cards cannot be exchanged for cash."
+    },
+    {
+      "id": "acc-reset",
+      "category": "account",
+      "text": "Password reset: tap 'Forgot Password' on the login screen. An OTP is sent to the registered mobile number and is valid for 10 minutes."
+    },
+    {
+      "id": "acc-lock",
+      "category": "account",
+      "text": "After 5 wrong password attempts the account is locked for 30 minutes as a security measure. Resetting the password does not unlock it earlier."
+    },
+    {
+      "id": "acc-delete",
+      "category": "account",
+      "text": "Account deletion can be requested from Settings > Privacy. The account is deactivated immediately and permanently deleted after 30 days; logging in within 30 days restores it."
+    },
+    {
+      "id": "acc-phone",
+      "category": "account",
+      "text": "To change the registered mobile number, an OTP must be verified on the OLD number. If the old number is no longer available, the customer must contact support with a government ID."
+    },
+    {
+      "id": "acc-email",
+      "category": "account",
+      "text": "The registered email address can be changed from Settings > Profile after verifying an OTP sent to the new email address. Order emails go to the new address from then on."
+    },
+    {
+      "id": "war-elec",
+      "category": "warranty",
+      "text": "Electronics carry a 1-year manufacturer warranty from the delivery date. Claims need the invoice and are handled at the brand's authorised service centre, not by Shrivox support."
+    },
+    {
+      "id": "war-appl",
+      "category": "warranty",
+      "text": "Home appliances carry a 2-year warranty, and the compressor of refrigerators and air conditioners is covered for 5 years. Physical damage and water damage are excluded."
+    },
+    {
+      "id": "war-ext",
+      "category": "warranty",
+      "text": "Extended warranty of 1 additional year can be bought only within 30 days of delivery, at 8% of the product price."
+    },
+    {
+      "id": "loy-earn",
+      "category": "loyalty",
+      "text": "Shrivox Points: customers earn 1 point for every Rs 100 spent. Points are credited 7 days after delivery, once the return window has closed."
+    },
+    {
+      "id": "loy-expiry",
+      "category": "loyalty",
+      "text": "Points expire 12 months after they are credited. Customers get a reminder 30 days before expiry."
+    },
+    {
+      "id": "loy-redeem",
+      "category": "loyalty",
+      "text": "100 points are worth Rs 10 at checkout. Points can cover at most 20% of an order's value and cannot be used on gift cards."
+    },
+    {
+      "id": "svc-hours",
+      "category": "service",
+      "text": "Customer support is available from 9 am to 9 pm IST, all 7 days. Outside these hours the chat assistant answers and creates a callback request."
+    },
+    {
+      "id": "svc-escalate",
+      "category": "service",
+      "text": "Complaints involving safety issues, legal threats, fraud allegations or a request to speak to a manager must be escalated to a human agent immediately. The AI must only acknowledge and transfer."
+    },
+    {
+      "id": "svc-privacy",
+      "category": "service",
+      "text": "Customers can request a copy of their personal data or its deletion by emailing the privacy team. Requests are answered within 30 days. Payment card numbers are never stored by Shrivox."
+    },
+    {
+      "id": "long-delivery",
+      "category": "shipping",
+      "text": "Delivery handbook. Orders are shipped by our courier partners and the partner is shown on the tracking page. Every parcel is packed in tamper-evident packaging; if the seal looks broken the customer should refuse delivery and contact support at once. For prepaid orders above Rs 2,000 the delivery executive asks for a 4-digit delivery OTP that is sent by SMS at dispatch, and the parcel is not handed over without it. The courier makes 3 delivery attempts on consecutive working days. After the third failed attempt the parcel returns to our warehouse and the refund is initiated within 3 business days. Customers can ask for a delivery slot between 10 am and 8 pm only for express orders. Deliveries to apartment complexes are made to the gate or reception if the security desk does not allow the executive inside. Large items such as furniture are delivered by a two-person team and assembly is done on the same day."
+    },
+    {
+      "id": "long-sellers",
+      "category": "service",
+      "text": "Marketplace sellers handbook. Products on Shrivox are sold either by Shrivox Retail or by verified third-party sellers; the seller name appears on the product page under the price. Third-party sellers set their own prices but must follow the platform return and refund policy. A seller who fails to dispatch within 2 business days has the order cancelled automatically and the customer is refunded in full. Reviews can be posted only by customers who bought the product, and a review can be edited for up to 30 days. If a customer suspects a counterfeit product, a report can be raised from the order page; counterfeit complaints are reviewed within 72 hours and a confirmed case gives a full refund plus a Rs 200 coupon. Sellers are rated on dispatch time, cancellations and returns, and sellers below the minimum rating are suspended. Prices shown include GST."
+    },
+    {
+      "id": "long-app",
+      "category": "service",
+      "text": "App guide. The Shrivox app supports English and Hindi and the language can be switched from Settings > Language. Push notifications for order updates are on by default and can be turned off under Settings > Notifications, but security alerts cannot be turned off. The app needs Android 8 or iOS 14 and above. Saved addresses are limited to 10 per account and saved cards are tokenised by the bank, so full card numbers never appear in the app. Wishlist items are kept for 90 days. A price-drop alert can be set on any wishlist item and the notification arrives within 1 hour of the price change. To report a problem with the app itself, use Settings > Help > Report a bug and attach a screenshot. App updates are released every 2 weeks, and the app shows an in-app banner when a mandatory update is needed. If the app crashes at launch, clear the app cache from the phone settings before reinstalling, since a reinstall without clearing the cache keeps the same saved data."
+    },
+    {
+      "id": "ref-giftcard",
+      "category": "refunds",
+      "text": "Refund for orders paid with a gift card: the amount goes back to the same gift card balance within 24 hours of the return being approved. The gift card validity is not extended."
+    },
+    {
+      "id": "pay-netbanking",
+      "category": "payments",
+      "text": "If a net banking payment is debited but the order is not confirmed, the bank reverses the amount in 2-4 business days. Customers should not pay again until the status in My Orders is final."
+    },
+    {
+      "id": "ret-furniture",
+      "category": "returns",
+      "text": "Furniture and large appliances can be returned within 7 days of delivery only if unassembled and unused. Pickup is arranged by the delivery partner, and damage caused during self-assembly is not accepted."
+    },
+    {
+      "id": "ship-bulky",
+      "category": "shipping",
+      "text": "Furniture and large appliances are delivered by appointment: the courier calls to confirm a 2-hour slot and makes 2 attempts. If both fail, the order is returned to the warehouse and refunded."
+    }
+  ]
+}

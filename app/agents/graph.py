@@ -52,6 +52,7 @@ from app.agents.llm_client import chat_completion
 from app.core.observability import GUARD_EVENTS
 from app.core.upstream import UpstreamEmptyResponse
 from app.db.session import AsyncSessionLocal
+from app.agents.scope import check_scope, scope_notes
 from app.prompts.templates import DEFAULT_INTENT, INTENT_DETECTION_PROMPT, VALID_INTENTS, build_response_prompt
 from app.retrieval.retriever import contextual_query, retrieve
 
@@ -82,7 +83,19 @@ RETRY_INSTRUCTIONS = {
         "or the conversation. If the context does not say, tell the customer you will check and "
         "offer to connect them with a human agent."
     ),
+    "unsupported_negative": (
+        "Do not say the company does not offer, accept, support or ship something unless the context says so. "
+        "Not being mentioned in the context is not the same as not being offered: say you don't have that "
+        "information, that you will check, and offer to connect the customer with a human agent."
+    ),
 }
+
+
+RETRY_INSTRUCTIONS["scope_violation"] = (
+    "The context gives one figure for a specific list of places/items and a different figure for everything else. "
+    "The customer has not named anything on that list, so do not give the listed figure. Use the figure for "
+    "all other cases (see the scope notes), or state both cases and ask which applies."
+)
 
 
 class ConversationState(TypedDict):
@@ -198,10 +211,19 @@ async def escalate_response(state: ConversationState) -> dict:
     }
 
 
+def _customer_said(state: ConversationState) -> list[str]:
+    """What the CUSTOMER has said. Scope rules never take the agent's own words as evidence."""
+    return [m["content"] for m in state["conversation_history"] if m.get("role") == "user"] + [state["user_message"]]
+
+
+def _prompt(state: ConversationState) -> list[dict]:
+    notes = scope_notes(state["retrieved_docs"], _customer_said(state))
+    return build_response_prompt(state["retrieved_docs"], state["conversation_history"],
+                                 state["user_message"], notes=notes)
+
+
 async def generate_response(state: ConversationState) -> dict:
-    messages = build_response_prompt(
-        state["retrieved_docs"], state["conversation_history"], state["user_message"]
-    )
+    messages = _prompt(state)
     result = await chat_completion(messages)
     return {
         "response_text": result["text"],
@@ -217,6 +239,9 @@ async def safety_check(state: ConversationState) -> dict:
     said = [m["content"] for m in state["conversation_history"]] + [state["user_message"]]
     check = check_output(state["response_text"], grounded_in_kb=grounded,
                          context=state["retrieved_docs"], conversation=said)
+    if check.safe:
+        # Figures can all be in the context and still not apply to this customer (h-53): see scope.py.
+        check = check_scope(state["response_text"], state["retrieved_docs"], _customer_said(state)) or check
     if not check.safe:
         GUARD_EVENTS.labels("output", check.flag).inc()
         logger.warning("output_check_failed", flag=check.flag, category=check.category,
@@ -227,9 +252,7 @@ async def safety_check(state: ConversationState) -> dict:
 
 
 async def regenerate_response(state: ConversationState) -> dict:
-    messages = build_response_prompt(
-        state["retrieved_docs"], state["conversation_history"], state["user_message"]
-    )
+    messages = _prompt(state)
     instruction = RETRY_INSTRUCTIONS.get(state.get("safety_flag"), STRICT_RETRY_INSTRUCTION)
     messages.insert(1, {"role": "system", "content": instruction})
     result = await chat_completion(messages)

@@ -11,13 +11,26 @@ here means prompt iteration is a diff on this file alone.
 """
 
 SYSTEM_PROMPT = """You are Shrivox, a customer support executive for an e-commerce company.
-You speak naturally in whichever language mix the customer uses -- English, Hindi, or Hinglish.
-Match their language and tone; don't force pure English if they're speaking Hinglish.
+
+Language: reply in the language of the customer's LATEST message, and do not switch on your own.
+- English message -> plain English. No Hindi or Hinglish words or fillers ("arre", "haanji", "ji").
+- Romanised Hindi / Hinglish message -> Hinglish, in the same register.
+- Devanagari message -> Hindi in Devanagari.
+- If you cannot tell, use English.
 
 Rules:
 - Only state policies/facts that appear in the provided context. If the context doesn't cover
   the question, say you'll need to check and offer to escalate -- never invent policy details,
   amounts, or timelines.
+- Never say the company does not offer, accept, support, ship or sell something, or that it is
+  "not available", unless the context explicitly says so. Not being mentioned in the context is
+  not the same as not being offered: say you don't have that information, that you will check,
+  and offer a human agent.
+- Do not assume facts the customer did not state and the context does not list. A city is not a
+  "metro", a product is not "electronics" or "apparel", an order is not "prepaid" or "COD" unless
+  the customer or the context says so. If the context lists specific cities (or products) for a
+  faster or special rule and the customer's is not listed, use the general rule. If the answer
+  depends on something unknown, ask one short question or state the cases the context gives.
 - Keep responses short and conversational (2-3 sentences) -- this is a voice call, not a chat window.
 - If the customer sounds frustrated or the issue is outside policy, offer human escalation.
 - Never make promises ("guaranteed", "100% refund") beyond what the context supports.
@@ -41,9 +54,16 @@ Message: "{message}"
 Respond with only the category name, nothing else."""
 
 
-def build_response_prompt(context_docs: list[str], conversation_history: list[dict], user_message: str) -> list[dict]:
+def build_response_prompt(context_docs: list[str], conversation_history: list[dict], user_message: str,
+                          notes: list[str] | None = None) -> list[dict]:
+    """`notes` are code-derived statements about which context rule applies to this customer (app/agents/scope.py).
+    Absent or empty, the prompt is byte-for-byte what it was before."""
     context_block = "\n\n".join(context_docs) if context_docs else "No relevant context found."
-    messages = [{"role": "system", "content": SYSTEM_PROMPT + f"\n\nContext:\n{context_block}"}]
+    system = SYSTEM_PROMPT + f"\n\nContext:\n{context_block}"
+    if notes:
+        system += "\n\nScope notes (which rule applies to this customer; they follow from the context above):\n" \
+                  + "\n".join(f"- {n}" for n in notes)
+    messages = [{"role": "system", "content": system}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": user_message})
     return messages
