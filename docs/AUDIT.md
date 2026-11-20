@@ -1,9 +1,9 @@
 # Shrivox audit and improvement log
 
 Method: read the whole codebase, ran it, wrote a failing test or probe for each suspected
-defect *before* fixing it, then fixed and re-ran everything. Final state: **407 tests pass**
-(317 unit + 90 integration against real Postgres/pgvector and Redis), ruff (correctness rules)
-clean, unit coverage of `app/` 89%.
+defect *before* fixing it, then fixed and re-ran everything. Current state: **579 tests pass**
+(unit tests plus integration tests against real Postgres/pgvector and Redis), and ruff
+(correctness rules) is clean. (The first audit pass ended at 407 tests; later addenda below added the rest.)
 
 ## What changed, in the order done
 
@@ -28,7 +28,7 @@ grounding check on amounts, percentages and durations (normalised: 1 week = 7 da
 An unsafe answer is regenerated once with an instruction targeted at the flag, checked again, and
 replaced by a human hand-off if still unsafe.
 
-**Honest numbers.** The labelled set (98 input / 46 output cases) is self-written, so 1.00/1.00
+**Honest numbers.** The labelled set (98 input / 57 output cases) is self-written, so 1.00/1.00
 is a regression signal, not an accuracy claim. The first held-out batch I wrote *after* the rules
 scored worse than that; I fixed the rules and added those cases to the set, so they are no longer
 held out. Two known misses are recorded in `guardrail_cases.json` under `known_gaps`
@@ -45,7 +45,7 @@ held out. Two known misses are recorded in `guardrail_cases.json` under `known_g
 
 ## Deliberately not done
 Tool-calling agent loop (needs a real order backend to be meaningful), streaming responses,
-Alembic migrations, HNSW index (matters only at KB sizes I couldn't test), prompt-injection
+Alembic migrations, prompt-injection
 hardening of retrieved documents, persisting eval runs (the `Evaluation` table requires a
 `business_id`, which the offline guardrail eval has no meaning for). Truncated answers are
 counted and logged but still delivered; the next step is to raise `max_tokens` or retry.
