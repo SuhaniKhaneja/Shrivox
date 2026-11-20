@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # --- Postgres (also hosts pgvector -- see app/db/models.py for why) ---
     postgres_dsn: str = "postgresql+asyncpg://shrivox:shrivox@localhost:5432/shrivox"
 
+    # --- Database pool (small defaults suit free/serverless Postgres) ---
+    database_pool_size: int = Field(default=2, ge=1, le=10)
+    database_max_overflow: int = Field(default=0, ge=0, le=10)
+    database_pool_timeout_seconds: float = Field(default=15.0, ge=1, le=60)
+    database_pool_recycle_seconds: int = Field(default=240, ge=60, le=3600)
+    database_connect_timeout_seconds: float = Field(default=10.0, ge=1, le=60)
+    # Set DATABASE_REQUIRE_TLS=true for Neon or another hosted database.
+    database_require_tls: bool = False
+
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
 
@@ -83,6 +92,8 @@ class Settings(BaseSettings):
     max_conversation_turns: int = Field(default=30, ge=2, le=500)
     session_ttl_seconds: int = Field(default=3600, ge=60)  # Redis session expiry (1 hr of inactivity)
     log_level: str = "INFO"
+    # Disable on public portfolio deployments unless a private metrics collector exists.
+    metrics_enabled: bool = True
 
     @model_validator(mode="after")
     def _check_jwt_secret(self):

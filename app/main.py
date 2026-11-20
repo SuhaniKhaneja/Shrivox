@@ -11,19 +11,23 @@ import asyncio
 import math
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api import auth, conversations, documents
+from app.config import settings
 from app.core.failures import CATALOGUE, RateLimitExceeded, code_for_exception
 from app.core.log_redaction import install_token_redaction
-from app.core.observability import configure_logging, metrics_middleware, metrics_response
+from app.core.observability import (
+    configure_logging,
+    metrics_middleware,
+    metrics_response,
+)
 from app.core.upstream import UpstreamError
-from app.config import settings
 from app.db.session import engine
 from app.db.vector_index import ensure_vector_index
-from app.api import auth, documents, conversations
 
 logger = structlog.get_logger()
 configure_logging(settings.log_level)
@@ -80,6 +84,8 @@ async def health():
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics():
-    """Prometheus scrape endpoint. Carries no customer content (see observability.py);
-    in production keep it off the public ingress and scrape it from inside the network."""
+    """Prometheus endpoint; disable it on public portfolio deployments by default."""
+    if not settings.metrics_enabled:
+        # Return 404 rather than advertise the endpoint to unauthenticated scanners.
+        raise HTTPException(status_code=404, detail="Not found")
     return metrics_response()

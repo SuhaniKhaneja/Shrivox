@@ -1,0 +1,30 @@
+# Never send local credentials or environment files to a remote Docker builder.
+.env
+.env.*
+!.env.example
+
+# Git metadata and local Python environments.
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Test and tool caches.
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Local logs, database dumps, and generated evaluation/diagnostic artifacts.
+*.log
+*.rdb
+eval_report.json
+rag_eval_report*.json
+rag_eval_smoke.json
+*_guardrails.json
+merge-conflicts.txt
+staged-resolutions.txt
+theirs_guardrails.json
