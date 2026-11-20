@@ -1,0 +1,51 @@
+# Free portfolio deployment only. No paid resources or keep-awake pinger.
+# Create this Blueprint in the Render dashboard after the deployment-readiness PR is merged.
+services:
+  - type: web
+    name: shrivox-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: REGISTRATION_ENABLED
+        value: "false"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: METRICS_ENABLED
+        value: "false"
+      - key: DATABASE_REQUIRE_TLS
+        value: "true"
+      - key: DATABASE_POOL_SIZE
+        value: "1"
+      - key: DATABASE_MAX_OVERFLOW
+        value: "0"
+      - key: DATABASE_POOL_TIMEOUT_SECONDS
+        value: "15"
+      - key: DATABASE_POOL_RECYCLE_SECONDS
+        value: "240"
+      - key: DATABASE_CONNECT_TIMEOUT_SECONDS
+        value: "10"
+      - key: POSTGRES_DSN
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: shrivox-redis
+          property: connectionString
+
+  - type: keyvalue
+    name: shrivox-redis
+    plan: free
+    region: singapore
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+    persistenceMode: off
