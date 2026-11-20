@@ -38,7 +38,8 @@ User message (JWT identifies business_id)
    |
    v
 [generate_response] --> [safety_check] --safe--> END
-                            |  unsafe (ungrounded promise, or a figure not in the KB/conversation)
+                            |  unsafe (ungrounded promise, a figure not in the KB/conversation, an unsupported
+                            |  refusal, or a figure that applies to a different place than the customer's)
                             v
                   [regenerate_response] (targeted instruction, ONE retry) --> [safety_check]
                             |  still unsafe
@@ -77,6 +78,11 @@ app/
   config.py            Centralized settings (env-var backed)
   core/
     security.py          JWT issuance/verification, password hashing
+    upstream.py            Gemini retry policy (timeouts, backoff, honours the server's retry delay)
+    failures.py              Fixed client-facing error messages (no exception text leaks)
+    ratelimit.py              Redis rate limits (login, register, ticket, chat)
+    observability.py           Prometheus metrics
+    log_redaction.py            Redacts the WebSocket ticket from server logs
   api/
     deps.py               Shared auth dependency (JWT -> CurrentUser)
     auth.py                Business registration + login
@@ -85,6 +91,7 @@ app/
   agents/
     graph.py               LangGraph state machine (the core agent)
     guardrails.py            Input/output safety checks
+    scope.py                   Scoped-figure rules ("X for a listed group, Y for all other")
     llm_client.py             Gemini wrapper (retry + latency capture)
   retrieval/
     retriever.py             pgvector search + Google embeddings (RAG)
@@ -94,16 +101,29 @@ app/
   db/
     models.py                    Multi-tenant Postgres schema
     session.py                     Async session factory
+    vector_index.py                  HNSW index + iterative-scan setup (pgvector >= 0.8)
   prompts/
     templates.py                    System prompt + intent/response templates
   evaluation/
     eval_dataset.json                 Labeled test cases (Hinglish + English)
     run_eval.py                        Evaluation harness (see below)
+    rag_eval.py                         RAG evaluation: retrieval metrics, LLM-judged answers, threshold sweep
+    rag_corpus.json                      Realistic evaluation corpus (52 entries)
+    rag_dataset.json                      Small demo question set
+    rag_dataset_hard.json                  61-question hard set
+    language.py                             Reply-language detector used by the eval
+    guardrail_eval.py                        Offline guardrail regression eval
+    guardrail_cases.json                      Labelled guardrail cases (self-written)
 data/knowledge_base/        Sample Hinglish support KB (JSON)
 scripts/
   init_db.py                    Creates the pgvector extension + tables
   seed_demo_business.py           Seeds a demo tenant + admin user + KB
-tests/                       pytest suite, external calls mocked
+  test_chat.py                      Command-line chat smoke test (login -> ticket -> WebSocket)
+  bench_vector_search.py              Vector search benchmark on a scratch database
+docs/
+  AUDIT.md                        Audit and improvement log, with what could not be verified
+  bench_vector_search_40k.json      Saved benchmark result
+tests/                       pytest suite: unit tests mock external calls; tests/integration use real Postgres + Redis
 docker/Dockerfile
 docker-compose.yml           Postgres (pgvector) + Redis + app
 .github/workflows/ci.yml     Test + build on every push
@@ -341,7 +361,6 @@ every REST endpoint when the database or Gemini fails.
   one call per text (logged as `embed_batch_count_mismatch`). Batch behaviour has
   not been verified against the live API.
 - The Redis timeout setting is applied, but only the connection-refused path is covered by a test, not an actual slow Redis.
-- There is no rate limiting yet.
 
 ## Evaluation
 
@@ -357,9 +376,40 @@ Hinglish + English test set. It measures:
 - **Avg end-to-end latency** — is this fast enough for a live call
 - **Safety flag rate** — how often the output guardrail intervened
 
-**Status: harness is built, not yet run against the full labeled set.**
-Running it and publishing a baseline is the next milestone before
-moving to Phase 2.
+**Status of `run_eval`: harness is built; no baseline published yet.** The measured
+results below come from the separate RAG evaluation (`rag_eval`).
+
+### RAG evaluation results
+
+```
+python -m app.evaluation.rag_eval --corpus realistic --pause 2 --llm-retries 3
+```
+
+Live run against Gemini on `main` (6d3b0d4), 2026-11-20, 61 questions over the 52-entry
+realistic corpus: 52 questions have a known relevant document and are scored for retrieval;
+the other 9 are questions the corpus does not cover.
+
+| Measure | Result |
+| --- | --- |
+| Questions run / errors | 61 / 0 |
+| Recall@3, Hit Rate@3, MRR (52 retrieval-scored questions) | 1.00, 1.00, 1.00 |
+| Answer relevance, judged by Gemini (1-5) | 4.98 |
+| Answer faithfulness, judged by Gemini (1-5) | 4.98 |
+| Reply language matches the question (heuristic detector) | 1.00 |
+| Raw answers flagged by the output guard | 0 of 61 |
+| Retrieval latency, includes the query-embedding call | p50 532 ms, p95 877 ms |
+
+One answer scored 4 on both judged measures (h-52, an assembled sofa: the judge marked down an
+offer to escalate to a human); the other 60 scored 5. The offline similarity-floor sweep on this
+run: at floors up to 0.50 recall stays 1.00 while all 9 uncovered questions still retrieve some
+context; at 0.60 recall stays 1.00 and that drops to 0.67; at 0.70 recall falls to 0.85. The
+production floor (0.25) has not been changed.
+
+**Limits.** The corpus and questions are self-written, so these numbers compare versions of
+this system; they are not an accuracy claim for production traffic. The judge is an LLM and its
+prompt was tightened after the first live report. Each question was run once, and the answers are
+the model's raw output, before the output guard's regenerate-and-hand-off loop. Latency is
+retrieval only, not a whole chat turn.
 
 ## Observability
 
@@ -409,6 +459,28 @@ public ingress.
   `--pause`), passes history to follow-up answers, and adds deterministic per-answer checks: language match and
   what the output guard would flag.
 
+## Scoped figures (the Pune case)
+
+A live eval question, "Will my order reach Pune in 5 days?", showed that every number in an
+answer can appear in the retrieved text and still be wrong for the customer. The policy said
+standard delivery takes 4-7 business days to six listed metro cities and 7-10 business days to
+all other locations; retrieval ranked it first, but the model gave Pune the 4-7 figure, and the
+numeric guard passed it because 4-7 is in the context.
+
+`app/agents/scope.py` finds the supported sentence pattern: one delivery figure for a listed
+group of cities and another figure for all other locations. Before generation it adds a note to
+the prompt saying which figure applies to this customer; after generation it flags an answer that
+gives the listed-city figure when the customer named a city outside the list (`scope_violation`:
+one targeted regeneration, then a human hand-off). Only the customer's own words count as
+naming a place, never the agent's earlier turns or the answer itself. In the live run above, Pune and Gurgaon got 7-10 days,
+"Bangalore" was recognised as a listed metro (4-7), and Mumbai got 4-7. A question naming no
+city asked the customer to specify their location before confirming the delivery timeline.
+
+**Limits.** It handles only that one sentence shape (not the reverse word order, and not a rule
+split across two retrieved passages); the city-alias table is small (Bangalore/Bengaluru and a
+few others) plus typo tolerance, so an unrecognised alias leads to a retry or hand-off rather
+than a confident wrong figure; each case was run once. See `docs/AUDIT.md`.
+
 ## Guardrail regression eval
 
 ```
@@ -434,8 +506,9 @@ quality.
 - Voice (streaming ASR/TTS) and Twilio telephony are not yet wired in
   — the WebSocket contract is designed to extend to them without
   re-architecting, but they're not built yet.
-- Evaluation harness has not been run against the full labeled set —
-  no accuracy/latency numbers published yet.
+- `run_eval` (intent accuracy, category-level retrieval, end-to-end latency) has not been
+  published as a baseline; the measured results are the RAG evaluation above, on a
+  self-written set, with retrieval latency only and no load test.
 - Intent classifier doesn't yet distinguish gratitude/confirmation
   from greeting/general_query (e.g. "thanks" and "ok got it" both
   route generically) — flagged as a near-term fix.
