@@ -1,7 +1,7 @@
 # Shrivox audit and improvement log
 
 Method: read the whole codebase, ran it, wrote a failing test or probe for each suspected
-defect *before* fixing it, then fixed and re-ran everything. Current state: **579 tests pass**
+defect *before* fixing it, then fixed and re-ran everything. Current state: **588 tests pass**
 (unit tests plus integration tests against real Postgres/pgvector and Redis), and ruff
 (correctness rules) is clean. (The first audit pass ended at 407 tests; later addenda below added the rest.)
 

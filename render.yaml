@@ -41,6 +41,8 @@ services:
           type: keyvalue
           name: shrivox-redis
           property: connectionString
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
 
   - type: keyvalue
     name: shrivox-redis
